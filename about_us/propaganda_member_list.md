@@ -28,7 +28,19 @@ const mainforce = [
 
 ]
 const substitute = []
-const retirement = [] 
+const retirement = [
+    {
+        avatar: 'https://github.com/SARSfang.png',
+        name: '方典',
+        title: 'TEL/VX:18720066325',
+        desc:'22-24赛季宣传经理',
+        links:[
+            {icon:'github', link : 'https://github.com/SARSfang'},
+            {icon:'bilibili', link: 'https://space.bilibili.com/22491017'},
+            {icon:'dji', link:'https://bbs.robomaster.com/user/75365'}
+        ]
+    },
+] 
 </script>
 
 <VPTeamPage>
