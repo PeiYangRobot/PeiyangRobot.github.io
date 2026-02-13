@@ -3,7 +3,7 @@ import { defineConfig } from 'vitepress'
 // https://vitepress.dev/reference/site-config
 export default defineConfig({
   title: "PYRo",
-  description: "天津大学北洋机甲战队文档站",
+  description: "天津大学北洋机甲文档站",
   themeConfig: {
     // https://vitepress.dev/reference/default-theme-config
     siteTitle: "PeiYang Robot",    
@@ -42,7 +42,8 @@ export default defineConfig({
 
     socialLinks: [
       { icon: 'github', link: 'https://github.com/PeiYangRobot' },
-      { icon: 'bilibili', link: 'https://space.bilibili.com/520634089?spm_id_from=333.337.0.0' }
+      { icon: 'bilibili', link: 'https://space.bilibili.com/520634089?spm_id_from=333.337.0.0' },
+      { icon: 'dji', link:'https://www.robomaster.com/zh-CN'}
     ],
     footer: {
       copyright: 'Copyright © 2026 - prsent PeiYang Robot'

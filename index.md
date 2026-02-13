@@ -11,7 +11,7 @@ hero:
   actions:
     - theme: brand
       text: 关于我们
-      link: /team.md
+      link: /about_us/index
     - theme: brand
       text: 关于此文档站
       link: /api-examples
