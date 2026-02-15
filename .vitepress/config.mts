@@ -33,8 +33,31 @@ export default defineConfig({
           text: 'PYRo-uCtrl-Unity',
           items: [
             { text: '简介', link: '/PYRo-uCtrl-Unity/index' },
-            { text: '开发者', link: '/PYRo-uCtrl-Unity/team' },
-            { text: '使用教程', link: '/PYRo-uCtrl-Unity/tutorial' },
+            { text: 'Algorithm', collapsed: true, items: [
+              { text: '简介', link: '/PYRo-uCtrl-Unity/Algorithm/index' },
+              { text: 'common', link: '/PYRo-uCtrl-Unity/Algorithm/common' },
+            ] },
+            { text: 'Application', collapsed: true, items: [
+              { text: '简介', link: '/PYRo-uCtrl-Unity/Application/index' },
+            ] },
+            { text: 'Component', collapsed: true, items: [
+              { text: '简介', link: '/PYRo-uCtrl-Unity/Component/index' },
+            ] },
+            { text: 'Core', collapsed: true, items: [
+              { text: '简介', link: '/PYRo-uCtrl-Unity/Core/index' },
+            ] },
+            { text: 'Debug', collapsed: true, items: [
+              { text: '简介', link: '/PYRo-uCtrl-Unity/Debug/index' },
+            ] },
+            { text: 'Device', collapsed: true, items: [
+              { text: '简介', link: '/PYRo-uCtrl-Unity/Device/index' },
+            ] },
+            { text: 'Module', collapsed: true, items: [
+              { text: '简介', link: '/PYRo-uCtrl-Unity/Module/index' },
+            ] },
+            { text: 'Peripheral', collapsed: true, items: [
+              { text: '简介', link: '/PYRo-uCtrl-Unity/Peripheral/index' },
+            ] },
           ]
         }
       ],

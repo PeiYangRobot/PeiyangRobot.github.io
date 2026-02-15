@@ -8,27 +8,11 @@ import {
   VPTeamMembers,
   VPTeamPageSection
 } from 'vitepress/theme'
+import { mem5 } from '../public/member_list/members'
 
-const mainforce = [
-
-    {
-        avatar: '',
-        name: '',
-        title: '',
-        desc:'',
-        links:[
-            {icon:'github', link : ''},
-            {icon:'bilibili', link: ''},
-            {icon: 'zhihu', link:''},
-            {icon:'csdn', link:''},
-            {icon:'dji', link:''}
-        ]
-    },
-    
-
-]
+const mainforce = [mem5]
 const substitute = []
-const retirement = [] 
+const retirement = []
 </script>
 
 <VPTeamPage>
