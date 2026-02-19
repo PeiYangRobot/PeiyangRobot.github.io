@@ -27,6 +27,7 @@ features:
     details: 成为RMer的第一步 
   - title: 教程 
     details: 队内出品的教程  
+    link: /Course/index
   - title: 队史馆 
     details: 点点滴滴 
  

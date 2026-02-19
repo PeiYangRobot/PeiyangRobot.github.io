@@ -21,13 +21,14 @@ export default defineConfig({
           { text: 'RM培训', link: '' },
         ]
       },
-      { text: '教程', link: '/' },
+      { text: '教程', link: '/Course/index' },
       { text: '队史馆', link: '/' },
       
     ],
 
-
+//右侧侧边栏配置
  sidebar: {
+  //嵌入式框架侧边栏
       '/PYRo-uCtrl-Unity': [
         {
           text: 'PYRo-uCtrl-Unity',
@@ -61,11 +62,20 @@ export default defineConfig({
           ]
         }
       ],
+      //教程侧边栏
+      //教程-其他
+      '/Course/others': [
+        {text: '简介', link: '/Course/others/index'},
+        {text: 'VSCode配置图床', link: '/Course/others/VScode图床配置'},
+
+        ]
     },
 
     outline: {
-      level: [2, 6], // 显示 h2 到 h6 的标题
-      label: '目录'   // 右侧栏顶部的标题文字
+      level: [2, 3], // 显示 h2 到 h3 的标题
+      label: '目录',  // 右侧栏顶部的标题文字
+      
+      
     },
 
     socialLinks: [
@@ -79,7 +89,8 @@ export default defineConfig({
     search: {
       provider: 'local'
     },
-
-
   }
 })
+
+  
+
