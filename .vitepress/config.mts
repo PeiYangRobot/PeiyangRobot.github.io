@@ -21,7 +21,13 @@ export default defineConfig({
           { text: 'RM培训', link: '' },
         ]
       },
-      { text: '教程', link: '/Course/index' },
+      { text: '教程', 
+        items: [
+          { text: '导航栏', link: '/Course/index' },
+          { text: '嵌入式框架教程', link: '/Course/PYRo-uCtrl-Unity/index' },
+          { text: '其他教程', link: '/Course/others/index' },
+        ]
+      },
       { text: '队史馆', link: '/' },
       
     ],
@@ -66,7 +72,7 @@ export default defineConfig({
       //教程-其他
       '/Course/others': [
         {text: '简介', link: '/Course/others/index'},
-        {text: 'VSCode配置图床', link: '/Course/others/VScode图床配置'},
+        {text: 'VSCode配置图床', link: '/Course/others/VScode_imgbed_cfg'},
 
         ]
     },
