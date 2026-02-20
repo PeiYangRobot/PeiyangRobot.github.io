@@ -11,7 +11,8 @@ import {
 import { 
   mem1, 
   mem2, 
-  mem3 
+  mem3,
+  mem8,
 } from '../public/member_list/members'
 
 const mainforce = [
@@ -20,7 +21,9 @@ const mainforce = [
   mem3
 ]
 const substitute = []
-const retirement = []
+const retirement = [
+  mem8,
+]
 </script>
 
 <VPTeamPage>

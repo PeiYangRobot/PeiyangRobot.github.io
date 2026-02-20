@@ -6,10 +6,10 @@ export const mem1 = {
   desc: '26赛季项目管理，25赛季英雄电控，24赛季英雄电控',
   links: [
     { icon: 'github', link: 'https://github.com/vod-x' },
-    { icon: 'bilibili', link: '' },
-    { icon: 'zhihu', link: '' },
-    { icon: 'csdn', link: '' },
-    { icon: 'dji', link: '' }
+    { icon: 'bilibili', link: 'https://space.bilibili.com/432161819' },
+    { icon: 'zhihu', link: 'https://www.zhihu.com/people/65-71-65-76-57' },
+    { icon: 'csdn', link: 'https://blog.csdn.net/The__Xia' },
+    { icon: 'dji', link: 'https://bbs.robomaster.com/user/89435' }
   ]
 }
 

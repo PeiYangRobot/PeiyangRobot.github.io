@@ -69,9 +69,21 @@ export default defineConfig({
         }
       ],
       //教程侧边栏
+      //教程-前端
+      '/Course/front-end': [
+        {text: '返回', link: '/Course/index'},
+        {text: '简介', link: '/Course/front-end/intro'},
+        {text: 'vitepress',collapsed: true, items: [
+          {text: '使用vitepress搭建文档站', link: '/Course/front-end/vitepress/setup'},
+          {text: '拉取与部署', link: '/Course/front-end/vitepress/clone'},
+          {text: '编写Markdown文档', link: '/Course/front-end/vitepress/markdown'},
+          {text: 'vitepress默认主题配置', link: '/Course/front-end/vitepress/default_theme'},
+        ]},
+      ],
       //教程-其他
       '/Course/others': [
-        {text: '简介', link: '/Course/others/index'},
+        {text: '返回', link: '/Course/index'},
+        {text: '简介', link: '/Course/others/intro'},
         {text: 'VSCode配置图床', link: '/Course/others/VScode_imgbed_cfg'},
 
         ]
