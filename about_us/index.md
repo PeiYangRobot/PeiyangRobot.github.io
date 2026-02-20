@@ -20,6 +20,9 @@ hero:
     - theme: brand
       text: 宣传组
       link: ./propaganda_member_list
+    - theme: brand
+      text: 管理人员
+      link: ./administrator_list
 
 features:
     - title: 队伍简介

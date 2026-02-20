@@ -14,7 +14,7 @@ hero:
       link: /about_us/index
     - theme: brand
       text: 关于此文档站
-      link: /api-examples
+      link: /
     - theme: brand
       text: 联系我们
       link: /

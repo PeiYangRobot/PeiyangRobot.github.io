@@ -23,52 +23,37 @@ export const mem2 = {
   ]
 }
 
-// electronic stub
-export const mem3 = {
-  avatar: '',
-  name: '',
-  title: '',
-  desc: '',
-  links: [
-    { icon: 'github', link: '' },
-    { icon: 'bilibili', link: '' },
-    { icon: 'zhihu', link: '' },
-    { icon: 'csdn', link: '' },
-    { icon: 'dji', link: '' }
-  ]
-}
+export const mem3 =    {
+        avatar: 'https://github.com/MekCraftLi.png',
+        name: 'MekCraftLi',
+        title: 'QQ:2653603048',
+        desc:'26赛季步兵电控，25赛季步兵电控，24赛季步兵电控',
+        links:[
+            {icon:'github', link : 'https://github.com/MekCraftLi'},
+        ]
+    }
 
-// algorithm
 export const mem4 = {
-  avatar: '',
-  name: '',
-  title: '',
-  desc: '',
+  avatar: 'https://github.com/Pason666.png',
+  name: 'Pason',
+  title: 'QQ:110419260',
+  desc: '26赛季哨兵电控，25赛季哨兵电控',
   links: [
-    { icon: 'github', link: '' },
-    { icon: 'bilibili', link: '' },
-    { icon: 'zhihu', link: '' },
-    { icon: 'csdn', link: '' },
-    { icon: 'dji', link: '' }
+    { icon: 'github', link: 'https://github.com/Pason666' },
   ]
 }
 
-// mechanical
 export const mem5 = {
-  avatar: '',
-  name: '',
-  title: '',
-  desc: '',
-  links: [
-    { icon: 'github', link: '' },
-    { icon: 'bilibili', link: '' },
-    { icon: 'zhihu', link: '' },
-    { icon: 'csdn', link: '' },
-    { icon: 'dji', link: '' }
-  ]
-}
+        avatar: 'https://github.com/RenshengJi.png',
+        name: '人生几何',
+        title: '主页: renshengji.github.io',
+        desc:'25赛季队长，24赛季视觉，23赛季视觉',
+        links:[
+            {icon:'github', link : 'https://github.com/RenshengJi'},
+        ]
+    }
 
-// propaganda
+
 export const mem6 = {
   avatar: '',
   name: '',

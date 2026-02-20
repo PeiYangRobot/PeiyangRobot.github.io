@@ -23,9 +23,9 @@ export default defineConfig({
       },
       { text: '教程', 
         items: [
-          { text: '导航栏', link: '/Course/index' },
-          { text: '嵌入式框架教程', link: '/Course/PYRo-uCtrl-Unity/index' },
-          { text: '其他教程', link: '/Course/others/index' },
+          { text: '导航栏', link: '/Course/intro' },
+          { text: '嵌入式框架教程', link: '/Course/PYRo-uCtrl-Unity/intro' },
+          { text: '其他教程', link: '/Course/others/intro' },
         ]
       },
       { text: '队史馆', link: '/' },
@@ -84,7 +84,7 @@ export default defineConfig({
       '/Course/others': [
         {text: '返回', link: '/Course/index'},
         {text: '简介', link: '/Course/others/intro'},
-        {text: 'VSCode配置图床', link: '/Course/others/VScode_imgbed_cfg'},
+        {text: 'VSCode配置图床', link: '/Course/others/VSCode_imgbed_cfg'},
 
         ]
     },
