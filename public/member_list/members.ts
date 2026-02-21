@@ -86,3 +86,13 @@ export const mem8 = {
         {icon:'dji', link:'https://bbs.robomaster.com/user/58882?tab=article'}
     ]
 }
+export const mem9 = {
+        avatar: 'https://github.com/YzmYalier.png',
+        name: '杨泽鸣',
+        title: 'QQ:2252283758',
+        desc:'26赛季队长，25赛季视觉，24赛季视觉',
+        links:[
+            {icon:'github', link : 'https://github.com/YzmYalier'},
+            {icon: 'zhihu', link:'https://www.zhihu.com/people/xfryar'},
+        ]
+    }

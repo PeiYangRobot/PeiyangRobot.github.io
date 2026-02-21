@@ -10,7 +10,7 @@ export default defineConfig({
     logo: '/figure/校徽.png',
     nav: [
 
-      { text: '嵌入式框架', link: '/PYRo-uCtrl-Unity/index' },
+      { text: '嵌入式框架', link: '/PYRo-uCtrl-Unity/intro' },
       { text: '新生培训', 
         items: [
           { text: '电控培训', link: '' },
@@ -24,7 +24,7 @@ export default defineConfig({
       { text: '教程', 
         items: [
           { text: '导航栏', link: '/Course/intro' },
-          { text: '嵌入式框架教程', link: '/Course/PYRo-uCtrl-Unity/intro' },
+          { text: '嵌入式教程', link: '/Course/PYRo-uCtrl-Unity/intro' },
           { text: '前端教程', link: '/Course/front-end/intro' },
           { text: '其他教程', link: '/Course/others/intro' },
         ]
@@ -40,31 +40,37 @@ export default defineConfig({
         {
           text: 'PYRo-uCtrl-Unity',
           items: [
-            { text: '简介', link: '/PYRo-uCtrl-Unity/index' },
+            { text: '简介', link: '/PYRo-uCtrl-Unity/intro' },
+            { text: '开发须知', collapsed: true, items: [
+              { text: '代码规范', link:'/PYRo-uCtrl-Unity/notice_before_start/code' },
+              { text: '文档规范', link:'/PYRo-uCtrl-Unity/notice_before_start/doc' },
+              { text: '提交规范', link:'/PYRo-uCtrl-Unity/notice_before_start/commit' },
+          ]},
+            
             { text: 'Algorithm', collapsed: true, items: [
-              { text: '简介', link: '/PYRo-uCtrl-Unity/Algorithm/index' },
+              { text: '简介', link: '/PYRo-uCtrl-Unity/Algorithm/intro' },
               { text: 'common', link: '/PYRo-uCtrl-Unity/Algorithm/common' },
             ] },
             { text: 'Application', collapsed: true, items: [
-              { text: '简介', link: '/PYRo-uCtrl-Unity/Application/index' },
+              { text: '简介', link: '/PYRo-uCtrl-Unity/Application/intro' },
             ] },
             { text: 'Component', collapsed: true, items: [
-              { text: '简介', link: '/PYRo-uCtrl-Unity/Component/index' },
+              { text: '简介', link: '/PYRo-uCtrl-Unity/Component/intro' },
             ] },
             { text: 'Core', collapsed: true, items: [
-              { text: '简介', link: '/PYRo-uCtrl-Unity/Core/index' },
+              { text: '简介', link: '/PYRo-uCtrl-Unity/Core/intro' },
             ] },
             { text: 'Debug', collapsed: true, items: [
-              { text: '简介', link: '/PYRo-uCtrl-Unity/Debug/index' },
+              { text: '简介', link: '/PYRo-uCtrl-Unity/Debug/intro' },
             ] },
             { text: 'Device', collapsed: true, items: [
-              { text: '简介', link: '/PYRo-uCtrl-Unity/Device/index' },
+              { text: '简介', link: '/PYRo-uCtrl-Unity/Device/intro' },
             ] },
             { text: 'Module', collapsed: true, items: [
-              { text: '简介', link: '/PYRo-uCtrl-Unity/Module/index' },
+              { text: '简介', link: '/PYRo-uCtrl-Unity/Module/intro' },
             ] },
             { text: 'Peripheral', collapsed: true, items: [
-              { text: '简介', link: '/PYRo-uCtrl-Unity/Peripheral/index' },
+              { text: '简介', link: '/PYRo-uCtrl-Unity/Peripheral/intro' },
             ] },
           ]
         }
@@ -108,8 +114,12 @@ export default defineConfig({
     search: {
       provider: 'local'
     },
-  }
+  },
+  markdown: {
+    math: true, // 启用数学公式支持
+  },
 })
+
 
   
 

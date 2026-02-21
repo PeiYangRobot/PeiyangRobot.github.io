@@ -11,9 +11,12 @@ import {
 import { 
          mem5,
          mem6,
+         mem9,
  } from '../public/member_list/members'
 
-const mainforce = []
+const mainforce = [
+    mem9,
+]
 const substitute = []
 const retirement = [
     mem5,

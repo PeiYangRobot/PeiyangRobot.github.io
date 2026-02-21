@@ -22,7 +22,7 @@ hero:
 features:
   - title: PYRo-uCtrl-Unity
     details: 嵌入式开发框架 
-    link: /PYRo-uCtrl-Unity/index
+    link: /PYRo-uCtrl-Unity/intro
   - title: 新生培训 
     details: 成为RMer的第一步 
   - title: 教程 

@@ -135,10 +135,21 @@ html.dark {
  * Component: Custom Block
  * -------------------------------------------------------------------------- */
 
+
 :root {
   --vp-custom-block-tip-border: transparent;
   --vp-custom-block-tip-text: var(--vp-c-text-1);
   --vp-custom-block-tip-bg: var(--vp-c-brand-soft);
   --vp-custom-block-tip-code-bg: var(--vp-c-brand-soft);
+}
+
+/**
+ * Customize Hard Line Break (Two spaces + Enter)
+ * -------------------------------------------------------------------------- */
+.vp-doc br {
+    display: block;
+    content: "";
+    margin: 0;
+    height: 30px; /* Edit this value to control line break height */
 }
 

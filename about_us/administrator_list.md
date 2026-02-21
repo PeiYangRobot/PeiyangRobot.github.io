@@ -12,10 +12,12 @@ import {
   mem1, 
   mem5,
   mem6,
+  mem9,
 } from '../public/member_list/members'
 
 const mainforce = [
   mem1,
+  mem9,
 ]
 const retirement = [
     mem5,
