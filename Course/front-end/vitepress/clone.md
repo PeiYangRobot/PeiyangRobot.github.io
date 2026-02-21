@@ -178,7 +178,47 @@ ctrl+shift+p 打开VSCode指令面板，输入task，选中运行任务  ![clone
 打开自己的github仓库，切换到dev分支，确认已经修改  
 ![clone-2026-02-21-20260221110208](https://peiyangrobot-doc-1405234710.cos.ap-beijing.myqcloud.com/Course/front-end/vitepress/clone-2026-02-21-20260221110208.png)  
 ### 3.2、更新公有仓库
-由于这个文档站是由队内成员共同开发，可能在你开发的过程中已经有其他队员提交了pr，修改了文档站源码，为了避免冲突，需要在提交pr前先更新源码，将冲突在本地解决。
+由于这个文档站是由队内成员共同开发，可能在你开发的过程中已经有其他队员提交了pr，修改了文档站源码，为了避免冲突，需要在提交pr前先更新源码，将冲突在本地解决。  
+在github中，将分支切换到main分支，点击sync fork，更新fork下来的仓库  
+![clone-2026-02-21-20260221110648](https://peiyangrobot-doc-1405234710.cos.ap-beijing.myqcloud.com/Course/front-end/vitepress/clone-2026-02-21-20260221110648.png)  
+回到VSCode，将分支切换为main分支  
+![clone-2026-02-21-20260221110933](https://peiyangrobot-doc-1405234710.cos.ap-beijing.myqcloud.com/Course/front-end/vitepress/clone-2026-02-21-20260221110933.png)  
+可以看见远程的main分支已经发生更改，点击同步更改将其同步至本地  
+![clone-2026-02-21-20260221111322](https://peiyangrobot-doc-1405234710.cos.ap-beijing.myqcloud.com/Course/front-end/vitepress/clone-2026-02-21-20260221111322.png)  
+如果更新远程分支后，在本地看不见更改，可能是因为本地git更新不及时导致的，输入以下命令，将远程分支下载至本地
+```
+git fetch origin
+```
+将远程分支同步至本地后，效果如下
+![clone-2026-02-21-20260221111526](https://peiyangrobot-doc-1405234710.cos.ap-beijing.myqcloud.com/Course/front-end/vitepress/clone-2026-02-21-20260221111526.png)
+
+### 3.3、合并分支
+将分支切回dev分支  
+![clone-2026-02-21-20260221111618](https://peiyangrobot-doc-1405234710.cos.ap-beijing.myqcloud.com/Course/front-end/vitepress/clone-2026-02-21-20260221111618.png)  
+选择合并分支  
+![clone-2026-02-21-20260221111728](https://peiyangrobot-doc-1405234710.cos.ap-beijing.myqcloud.com/Course/front-end/vitepress/clone-2026-02-21-20260221111728.png)
+如果有冲突，参考[此文章](https://vscode.js.cn/docs/sourcecontrol/merge-conflicts)合并冲突，合并完冲突后，同[3.1](#31将本地的修改提交至github上你fork的仓库中)更新仓库并同步至github上  
+![clone-2026-02-21-20260221112318](https://peiyangrobot-doc-1405234710.cos.ap-beijing.myqcloud.com/Course/front-end/vitepress/clone-2026-02-21-20260221112318.png)
+### 3.4、提交PR
+在github的仓库中，切到dev分支，点击Compare & pull request  
+![clone-2026-02-21-20260221112528](https://peiyangrobot-doc-1405234710.cos.ap-beijing.myqcloud.com/Course/front-end/vitepress/clone-2026-02-21-20260221112528.png)  
+进入如下界面，确认自己是否是从fork仓库的dev分支合并至主仓库的main分支  
+![clone-2026-02-21-20260221112730](https://peiyangrobot-doc-1405234710.cos.ap-beijing.myqcloud.com/Course/front-end/vitepress/clone-2026-02-21-20260221112730.png)  
+为了方便管理，务必为你的提交添加必要的信息，在add a title一栏中输入的信息，与git commit一样，会被记录进git仓库中，而add a description可以为你自己的修改添加更加详细的描述，方便pr的审核。
+![clone-2026-02-21-20260221112923](https://peiyangrobot-doc-1405234710.cos.ap-beijing.myqcloud.com/Course/front-end/vitepress/clone-2026-02-21-20260221112923.png)  
+一些开源的项目的pr对add a title有严格的格式要求，对于此文档站而言，各位在开发过程中主要是编写markdown文件，因此，我们的pr格式为
+```
+文件1路径 编写内容1
+文件2路径 编写内容2
+......
+```
+以我此次提交的pr为例，我修改了位于Courese/front-end/intro.md，文章名称为《简介》，那么我的title就是
+```
+Course/front-end/intro.md 修改《简介》
+```
+提交完pr后，会进入如下界面  
+![clone-2026-02-21-20260221113439](https://peiyangrobot-doc-1405234710.cos.ap-beijing.myqcloud.com/Course/front-end/vitepress/clone-2026-02-21-20260221113439.png)  
+需要等待审核通过才能正式合并进文档站，如果是队内开发，当你提交pr后，请及时提醒队内负责维护此文档站的队员，对你的pr进行审核。
 
 <script setup>
 import { VPTeamMembers } from 'vitepress/theme'
