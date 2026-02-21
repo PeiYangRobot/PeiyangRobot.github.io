@@ -11,6 +11,7 @@ import {
 import { 
   mem1, 
   mem5,
+  mem6,
 } from '../public/member_list/members'
 
 const mainforce = [
@@ -18,6 +19,7 @@ const mainforce = [
 ]
 const retirement = [
     mem5,
+    mem6,
 ]
 </script>
 

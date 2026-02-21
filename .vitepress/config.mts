@@ -25,6 +25,7 @@ export default defineConfig({
         items: [
           { text: '导航栏', link: '/Course/intro' },
           { text: '嵌入式框架教程', link: '/Course/PYRo-uCtrl-Unity/intro' },
+          { text: '前端教程', link: '/Course/front-end/intro' },
           { text: '其他教程', link: '/Course/others/intro' },
         ]
       },
