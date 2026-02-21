@@ -10,11 +10,15 @@ import {
 } from 'vitepress/theme'
 import { 
          mem5,
+         mem6,
  } from '../public/member_list/members'
 
 const mainforce = []
 const substitute = []
-const retirement = [mem5]
+const retirement = [
+    mem5,
+    mem6,
+    ]
 </script>
 
 <VPTeamPage>

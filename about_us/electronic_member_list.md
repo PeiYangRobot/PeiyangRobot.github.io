@@ -13,6 +13,7 @@ import {
   mem2, 
   mem3,
   mem4,
+  mem6,
   mem8,
 } from '../public/member_list/members'
 
@@ -24,6 +25,7 @@ const mainforce = [
 ]
 const substitute = []
 const retirement = [
+  mem6,
   mem8,
 ]
 </script>

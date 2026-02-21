@@ -55,16 +55,12 @@ export const mem5 = {
 
 
 export const mem6 = {
-  avatar: '',
-  name: '',
-  title: '',
-  desc: '',
+  avatar: 'https://github.com/wangonewen.png',
+  name: '王艺文',
+  title: 'QQ:1825686853',
+  desc: '24赛季项目管理，23赛季大符视觉，22赛季步兵电控，21赛季英雄电控',
   links: [
-    { icon: 'github', link: '' },
-    { icon: 'bilibili', link: '' },
-    { icon: 'zhihu', link: '' },
-    { icon: 'csdn', link: '' },
-    { icon: 'dji', link: '' }
+    { icon: 'github', link: 'https://github.com/wangonewen' },
   ]
 }
 
