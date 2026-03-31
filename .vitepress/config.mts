@@ -24,7 +24,7 @@ export default defineConfig({
       { text: '教程', 
         items: [
           { text: '导航栏', link: '/Course/intro' },
-          { text: '嵌入式教程', link: '/Course/PYRo-uCtrl-Unity/intro' },
+          { text: '嵌入式教程', link: '/Course/embedded/intro' },
           { text: '前端教程', link: '/Course/front-end/intro' },
           { text: '其他教程', link: '/Course/others/intro' },
         ]
@@ -76,6 +76,20 @@ export default defineConfig({
         }
       ],
       //教程侧边栏
+       //教程-嵌入式开发
+      '/Course/embedded':[
+        {text: '返回', link: '/Course/index'},
+        {text: '简介', link: '/Course/embedded/intro'},
+        {text: '第三方库', collapsed: true, items: [
+          {text: 'CMSIS DSP库', link: '/Course/embedded/third_party/cmsis_dsp'},
+        ]},
+        {text: '开发工具', collapsed: true, items: [
+          {text: 'Vscode工作流', collapsed: true, items: [
+            {text: '简介', link: '/Course/embedded/dev_tools/vscode/intro'},
+            {text: 'Debug配置与教学', link: '/Course/embedded/dev_tools/vscode/debug'},
+          ]},
+        ]},
+      ],
       //教程-前端
       '/Course/front-end': [
         {text: '返回', link: '/Course/index'},
