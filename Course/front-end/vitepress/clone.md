@@ -152,7 +152,6 @@ ctrl+shift+p 打开VSCode指令面板，输入task，选中运行任务  ![clone
 出现如下提示  
 ![clone-2026-02-21-20260221103028](https://peiyangrobot-doc-1405234710.cos.ap-beijing.myqcloud.com/Course/front-end/vitepress/clone-2026-02-21-20260221103028.png)  
 和一中一样，打开网站，查看效果。  
-这里更加推荐大家使用方法二，不仅编译更加方便，而且此脚本一直在后台运行，对文档站源码进行更改后，相应的更改会自动反应在网页上，不需要再次进行编译，只需要每次打开项目的时候运行一次此任务即可。
 
 ## 三、提交PR
 经过上述操作，你可以在本地修改文档站源码并进行编译，并且能在浏览器上查看效果。至此，当你确认你的更改无误后，便可提交PR（Pull Request），将你的本地修改合并至队内的[公有仓库](https://github.com/PeiYangRobot/PeiyangRobot.github.io)中，但为了确保合并可靠，还需要进行一些其他的操作。  
