@@ -50,27 +50,39 @@ export default defineConfig({
             { text: 'Algorithm', collapsed: true, items: [
               { text: '简介', link: '/PYRo-uCtrl-Unity/Algorithm/intro' },
               { text: 'common', link: '/PYRo-uCtrl-Unity/Algorithm/common' },
-            ] },
-            { text: 'Application', collapsed: true, items: [
-              { text: '简介', link: '/PYRo-uCtrl-Unity/Application/intro' },
+              { text: 'Powercontrol', link: '/PYRo-uCtrl-Unity/Algorithm/Powercontrol' },
+              { text: 'CRC', link: '/PYRo-uCtrl-Unity/Algorithm/CRC' },
             ] },
             { text: 'Component', collapsed: true, items: [
               { text: '简介', link: '/PYRo-uCtrl-Unity/Component/intro' },
+              { text: 'Image', link: '/PYRo-uCtrl-Unity/Component/Image' },
+              { text: 'INS', link: '/PYRo-uCtrl-Unity/Component/INS' },
+              { text: 'Motor', link: '/PYRo-uCtrl-Unity/Component/Motor' },
+              { text: 'Powermeter', link: '/PYRo-uCtrl-Unity/Component/Powermeter' },
+              { text: 'RC', link: '/PYRo-uCtrl-Unity/Component/RC' },
+              { text: 'Referee', link: '/PYRo-uCtrl-Unity/Component/Referee' },
+              { text: 'Supercap', link: '/PYRo-uCtrl-Unity/Component/Supercap' },
             ] },
             { text: 'Core', collapsed: true, items: [
               { text: '简介', link: '/PYRo-uCtrl-Unity/Core/intro' },
+              { text: 'FSM', link: '/PYRo-uCtrl-Unity/Core/FSM' },
+              { text: 'Lock', link: '/PYRo-uCtrl-Unity/Core/Lock' },
+              { text: 'Memory', link: '/PYRo-uCtrl-Unity/Core/Memory' },
+              { text: 'Task', link: '/PYRo-uCtrl-Unity/Core/Task' },
             ] },
             { text: 'Debug', collapsed: true, items: [
               { text: '简介', link: '/PYRo-uCtrl-Unity/Debug/intro' },
             ] },
             { text: 'Device', collapsed: true, items: [
               { text: '简介', link: '/PYRo-uCtrl-Unity/Device/intro' },
+              { text: 'IMU 相关', link: '/PYRo-uCtrl-Unity/Device/BMI088' },
             ] },
-            { text: 'Module', collapsed: true, items: [
-              { text: '简介', link: '/PYRo-uCtrl-Unity/Module/intro' },
-            ] },
+            { text: 'Module', link: '/PYRo-uCtrl-Unity/Module/intro' },
             { text: 'Peripheral', collapsed: true, items: [
               { text: '简介', link: '/PYRo-uCtrl-Unity/Peripheral/intro' },
+              { text: 'UART', link: '/PYRo-uCtrl-Unity/Peripheral/UART' },
+              { text: 'CAN', link: '/PYRo-uCtrl-Unity/Peripheral/CAN' },
+              { text: 'DWT', link: '/PYRo-uCtrl-Unity/Peripheral/DWT' },
             ] },
           ]
         }
