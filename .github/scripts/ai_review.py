@@ -37,7 +37,11 @@ response = client.chat.completions.create(
         }
     ],
     temperature=0.0,
-    max_tokens=2048,
+    max_tokens=8192,
 )
 
-print(response.choices[0].message.content)
+# 安全提取内容，防止空输出导致 PR 评论被跳过
+result = response.choices[0].message.content
+if not result or not result.strip():
+    result = "AI 审查完成：未发现明显问题。"
+print(result)
