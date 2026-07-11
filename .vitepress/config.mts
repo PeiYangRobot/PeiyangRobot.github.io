@@ -118,7 +118,7 @@ export default defineConfig({
         {text: '返回', link: '/Course/index'},
         {text: '简介', link: '/Course/others/intro'},
         {text: 'VSCode配置图床', link: '/Course/others/VSCode_imgbed_cfg'},
-
+        {text: 'GitHub配置PR_Agent', link: '/Course/others/PR_Agent'},
         ]
     },
 
