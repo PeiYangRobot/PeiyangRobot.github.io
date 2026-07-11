@@ -165,7 +165,11 @@ response = client.chat.completions.create(
     max_tokens=2048,
 )
 
-print(response.choices[0].message.content)
+# 安全提取内容，防止空输出导致 PR 评论被跳过
+result = response.choices[0].message.content
+if not result or not result.strip():
+    result = "AI 审查完成：未发现明显问题。"
+print(result)
 ```
 
 ## 3. 配置与部署
