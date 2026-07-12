@@ -547,47 +547,6 @@ struct fsm_active_t final : public fsm_t<owner>
 ### PASSIVE / ACTIVE 切换模式
 
 ```cpp
-// --- my_module_deps_t 定义 ---
-struct motor_ctrl_deps_t
-{
-    pyro::motor_base_t *motor{nullptr};
-    pyro::pid_t *pid_pos{nullptr};
-    pyro::pid_t *pid_spd{nullptr};
-};
-
-struct motor_ctrl_ctx_t
-{
-    pyro::motor_base_t *motor{nullptr};
-    pyro::pid_t *pid_pos{nullptr};
-    pyro::pid_t *pid_spd{nullptr};
-    float current_position{0.0f};
-    float current_velocity{0.0f};
-    float output_torque{0.0f};
-    motor_ctrl_cmd_t *cmd{nullptr};
-};
-
-// --- _init() 中桥接依赖到上下文 ---
-status_t motor_ctrl_t::_init()
-{
-    _ctx.motor   = _module_deps.motor;
-    _ctx.pid_pos = _module_deps.pid_pos;
-    _ctx.pid_spd = _module_deps.pid_spd;
-
-    if (nullptr == _ctx.motor || nullptr == _ctx.pid_pos || nullptr == _ctx.pid_spd)
-        return PYRO_ERROR;
-
-    return PYRO_OK;
-}
-
-// --- _update_feedback() 中读取 ---
-void motor_ctrl_t::_update_feedback()
-{
-    _ctx.motor->update_feedback();
-    _ctx.current_position = _ctx.motor->get_current_position();
-    _ctx.current_velocity = _ctx.motor->get_current_rotate();
-}
-
-// --- _fsm_execute() 中控制 ---
 void motor_ctrl_t::_fsm_execute()
 {
     _ctx.cmd = &_current_cmd;
