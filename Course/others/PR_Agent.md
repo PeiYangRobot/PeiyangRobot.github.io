@@ -431,7 +431,7 @@ jobs:
             }
 ```
 
-### 3. 配置与部署
+### 2. 配置与部署
 
 首先是基础版的密钥，然后需要在 GitHub 上勾选`Allow GitHub Actions to create and approve pull requests`，具体位置是在 `https://github.com/组织名称/仓库名称/settings/actions`的最下面，如果是灰色的不让点击，请找组织管理员在`https://github.com/organizations/组织名称/settings/actions`的最下面启用该功能，打开这个是为了让 Actions 提供的 Approve 能 merge PR
 
