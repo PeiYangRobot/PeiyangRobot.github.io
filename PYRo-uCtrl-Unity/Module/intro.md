@@ -250,22 +250,22 @@ void comm_task()
 
 ```cpp
 // --- my_module_deps_t 定义 ---
-struct motor_ctrl_deps_t
+struct module_deps_t
 {
     pyro::motor_base_t *motor{nullptr};
     pyro::pid_t *pid_pos{nullptr};
     pyro::pid_t *pid_spd{nullptr};
 };
 
+struct mo
+
 struct motor_ctrl_ctx_t
 {
-    pyro::motor_base_t *motor{nullptr};
-    pyro::pid_t *pid_pos{nullptr};
-    pyro::pid_t *pid_spd{nullptr};
+    module_deps_t *module_deps{nullptr};
     float current_position{0.0f};
     float current_velocity{0.0f};
     float output_torque{0.0f};
-    motor_ctrl_cmd_t *cmd{nullptr};
+    module_cmd_t *cmd{nullptr};
 };
 
 // --- _init() 中桥接依赖到上下文 ---
