@@ -2,7 +2,9 @@
 
 本文档记录了为 GitHub 技术文档仓库搭建 AI 自动 PR 审查工具的完整过程。当仓库收到 Pull Request（包括来自 fork 的 PR 和来自统一仓库不同分支间的 PR）时，自动调用 AI 模型对文档内容进行审查，并将意见以 PR Review 形式反馈给提交者。
 
-## 1. 项目背景与目标
+## 基础版
+
+### 1. 项目背景与目标
 
 **仓库类型**：基于 GitHub Pages 的技术文档站点，内容为 Markdown 格式的使用教程和开发经验分享。
 
@@ -18,7 +20,7 @@
 - DeepSeek / Gemini 等大语言模型
 - `pull_request_target` 事件（安全支持 fork PR 的密钥访问）
 
-## 2. 最终工作流文件
+### 2. 最终工作流文件
 
 配置完成后，你的项目根目录下应多一个 .github 文件夹：
 
@@ -32,7 +34,7 @@
     └── ai-review.yml
 ```
 
-### 2.1 工作流定义（.github/workflows/ai-review.yml）
+#### 2.1 工作流定义（.github/workflows/ai-review.yml）
 
 ```yaml
 # 工作流名称：会在 Actions 页面显示
@@ -112,13 +114,13 @@ jobs:
             }
 ```
 
-### 2.2 依赖文件（.github/scripts/requirements.txt）
+#### 2.2 依赖文件（.github/scripts/requirements.txt）
 
 ```txt
 openai>=1.0.0
 ```
 
-### 2.3 审查脚本（.github/scripts/ai_review.py）
+#### 2.3 审查脚本（.github/scripts/ai_review.py）
 
 以下提供 DeepSeek 版本（使用 OpenAI SDK 兼容调用）。
 
@@ -172,9 +174,9 @@ if not result or not result.strip():
 print(result)
 ```
 
-## 3. 配置与部署
+### 3. 配置与部署
 
-### 3.1 添加 API 密钥
+#### 3.1 添加 API 密钥
 
 1. 进入仓库 Settings → Secrets and variables → Actions → Repository secrets。
 
@@ -196,20 +198,20 @@ print(result)
 ```md
 使用 pull_request_target 事件。这个事件能让工作流在目标仓库的安全上下文中运行，从而访问到 Secrets，但也必须小心配置以避免安全风险。
 
-## pull_request_target 的工作原理与风险
+**pull_request_target 的工作原理与风险**
 它运行在目标仓库（PeiYangRobot/pr_agent_test）的默认分支（如 main）上，所以能读取仓库的 Secrets。
 
 但是，GitHub 会自动 checkout 源分支（fork 分支）的代码，也就是说，如果恶意提交者在 PR 中修改了你的审查脚本或 workflow 文件，理论上可以窃取你的 API 密钥。
 
 所以我们必须做到：绝不 checkout 或执行任何来自 fork 分支的代码，只使用目标分支自带的脚本和配置。
 
-## ✅ 安全的 pull_request_target 配置方案
+**✅ 安全的 pull_request_target 配置方案**
 我们将修改 workflow，使其在 pull_request_target 事件触发时，只从目标仓库检出我们信任的脚本（.github/scripts/ai_review.py），然后获取 PR 的 diff 发送给 DeepSeek。完全不执行 PR 分支中的任何文件。
 ```
 
 总之现在是可以用了
 
-### 3.2 推送到仓库
+#### 3.2 推送到仓库
 
 将以下三个文件放在仓库的默认分支（如 main）对应路径下：
 
@@ -221,7 +223,7 @@ print(result)
 
 推送后，所有新的 PR（包括 fork PR）都会自动触发审查。
 
-## 4. 常见问题与解决
+### 4. 常见问题与解决
 
 | 现象 | 原因 | 解决 |
 |------|------|------|
@@ -233,3 +235,219 @@ print(result)
 | 没有 PR 被审查 | 工作流文件只存在于源分支，未合并到目标分支 | 确保工作流文件在默认分支（如 `main`）中存在 |
 | fork PR 没有触发或不报错 | 可能因为仓库 Actions 设置要求对 fork PR 审批，或未启用 “Send secrets” | 检查 Settings → Actions → General 中的 Fork pull request 设置 |
 
+## 拓展版
+
+### 1. 自动通过PR
+
+#### 1. 项目背景与目标
+
+**仓库类型**：存放队里所有机器人代码的仓库。
+
+**需求**：当有 PR 提交时能及时通过，便于代码在兵种组内不同队员直接合作开发
+
+如果是全部交给仓库管理员进行审核的话其实跟没有审核没什么区别，当改动仅发生在兵种组内部时应当允许更改直接被通过（在没有冲突的情况下）
+
+在这种需求下，通过工作流直接通过 PR 的优势就体现出来了
+
+#### 2. 最终工作流文件
+
+相比于基础版，只需要对其中的 .yml 文件进行修改即可，我们想做到的是在发起 AI 审查前先看看改动文件，以下直接给出完整代码
+
+
+```yaml
+name: AI Code Review (DeepSeek)
+
+on:
+  pull_request_target:          # 关键：改为 pull_request_target
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    # 不再需要 fork 条件，因为 target 事件始终在目标仓库运行
+    steps:
+      # ========================
+      # 团队豁免检查 + 自动 approve 与 merge
+      # ========================
+      - name: Team-based auto approve and merge
+        id: team_check
+        uses: actions/github-script@v8
+        env:
+          TEAM_RULES: ${{ vars.TEAM_RULES }}   # 从仓库 Variables 读取团队规则
+        with:
+          script: |
+            const rules = JSON.parse(process.env.TEAM_RULES);
+            const prAuthor = context.payload.pull_request.user.login;
+            const prNumber = context.issue.number;
+            const { data: files } = await github.rest.pulls.listFiles({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+              per_page: 100
+            });
+            const changedPaths = files.map(f => f.filename);
+            console.log('PR author:', prAuthor);
+            console.log('Changed files:', changedPaths);
+
+            // 1. 查找作者所属兵种
+            let authorTeam = null;
+            for (const [team, config] of Object.entries(rules)) {
+              if (config.members.includes(prAuthor)) {
+                authorTeam = team;
+                break;
+              }
+            }
+
+            // 不属于任何豁免兵种 → 正常审查
+            if (!authorTeam) {
+              console.log('Author not in any team with skip privilege.');
+              core.setOutput('auto_merge', 'false');
+              return;
+            }
+
+            // 2. 检查所有变更是否都在该兵种目录下
+            const teamPath = rules[authorTeam].path;
+            const allInTeamDir = changedPaths.every(p => p.startsWith(teamPath));
+            if (!allInTeamDir) {
+              console.log('Changes outside team directory, regular review required.');
+              core.setOutput('auto_merge', 'false');
+              return;
+            }
+
+            // 3. 满足条件：自动 approve
+            console.log(`All changes in ${authorTeam} directory. Approving...`);
+            await github.rest.pulls.createReview({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+              event: 'APPROVE',
+              body: `🤖 自动通过：${prAuthor} 属于 **${authorTeam}** 兵种，且所有改动仅涉及本兵种目录，无需人工审查。`
+            });
+
+            // 4. 尝试自动 merge
+            try {
+              await github.rest.pulls.merge({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber,
+                merge_method: 'merge'   // 可改为 'squash' 或 'rebase'
+              });
+              console.log('PR merged successfully.');
+              core.setOutput('auto_merge', 'true');
+            } catch (mergeError) {
+              // 冲突：关闭 PR 并留言
+              if (mergeError.status === 409) {
+                console.log('Merge conflict. Closing PR...');
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: prNumber,
+                  body: '❌ 存在冲突，请解决并重新提交。'
+                });
+                await github.rest.pulls.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: prNumber,
+                  state: 'closed'
+                });
+                core.setOutput('auto_merge', 'false');
+              } else {
+                // 其他错误（如分支保护）仅留言不关闭
+                console.log('Auto merge failed:', mergeError.message);
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: prNumber,
+                  body: `⚠️ 自动合并失败：${mergeError.message} 请手动合并或检查分支保护规则。`
+                });
+                core.setOutput('auto_merge', 'false');
+              }
+            }
+
+      # ========================
+      # 以下为常规 AI 审查（仅在未自动 merge 时执行）
+      # ========================
+      # 第一步：只检出目标分支（main）的代码，而不是 PR 的合并代码
+      - name: Checkout trusted scripts
+        if: steps.team_check.outputs.auto_merge != 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.base_ref }}   # 强制使用目标分支（如 main）
+          path: trusted                 # 放到 trusted 目录下，避免与后续操作混淆
+
+      - name: Get PR diff
+        if: steps.team_check.outputs.auto_merge != 'true'
+        id: diff
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          # 获取 PR 的 diff（只读操作，安全）
+          gh pr diff $PR_NUMBER --repo ${{ github.repository }} > pr.diff
+          echo "diff_length=$(wc -c < pr.diff)" >> $GITHUB_OUTPUT
+
+      - name: Install Python dependencies
+        if: steps.team_check.outputs.auto_merge != 'true' && steps.diff.outputs.skip_review != 'true'
+        run: pip install -r trusted/.github/scripts/requirements.txt
+
+      - name: Analyze diff with DeepSeek
+        if: steps.team_check.outputs.auto_merge != 'true' && steps.diff.outputs.skip_review != 'true'
+        id: analyze
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          # 使用我们信任的脚本（来自目标分支）
+          python trusted/.github/scripts/ai_review.py pr.diff > review_output.md
+          # 保底输出，防止模型返回空导致无评论
+          if [ ! -s review_output.md ]; then
+            echo "AI 审查完成：未发现明显问题。" > review_output.md
+          fi
+          {
+            echo 'review_body<<EOF'
+            cat review_output.md
+            echo EOF
+          } >> $GITHUB_OUTPUT
+
+      - name: Post review comment
+        if: steps.team_check.outputs.auto_merge != 'true' && steps.diff.outputs.skip_review != 'true' && success()
+        uses: actions/github-script@v8
+        env:
+          REVIEW_BODY: ${{ steps.analyze.outputs.review_body }}   # 用环境变量传递
+        with:
+          script: |
+            const reviewBody = process.env.REVIEW_BODY;
+            if (reviewBody && reviewBody.trim()) {
+              await github.rest.pulls.createReview({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.issue.number,
+                body: reviewBody,
+                event: 'COMMENT'
+              });
+            }
+```
+
+### 3. 配置与部署
+
+首先是基础版的密钥，然后需要在 GitHub 上勾选`Allow GitHub Actions to create and approve pull requests`，具体位置是在 `https://github.com/组织名称/仓库名称/settings/actions`的最下面，如果是灰色的不让点击，请找组织管理员在`https://github.com/organizations/组织名称/settings/actions`的最下面启用该功能，打开这个是为了让 Actions 提供的 Approve 能 merge PR
+
+最后请在添加密钥的同一页面找到`Variables`，添加新的 Repository variables，名称填 TEAM_RULES，Value 为 json 格式，示例如下：
+
+``` json
+{
+  "Infantry": {
+    "path": "Robot/Infantry/",
+    "members": ["aaa"]
+  },
+ "Hero": {
+    "path": "Robot/Hero/",
+    "members": ["bbb"]
+  }
+}
+```
+
+注意这里的 members 要填写用户名而非昵称，path 要填写从根目录开始的完整路径。

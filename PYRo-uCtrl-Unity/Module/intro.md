@@ -1,355 +1,638 @@
-Version<Badge type ="tip" text="1.0.0"/>  
-File<Badge type = "info" text="pyro_module_base.h"/><Badge type = "info" text="pyro_module_base.cpp"/>
+# PYRo Module 开发指南
 
-# PYRo Module Base (模块基类)
+`pyro::module_base_t` 是 PYRo 框架中机器人模块的基类模板，采用 CRTP（奇异递归模板模式）提供类型安全的单例机制，并结合 FreeRTOS 任务与 HFSM（层级有限状态机）实现回调驱动的模块架构。
 
-这是一个基于 **CRTP (奇异递归模板模式)** 的机器人模块框架。`module_base_t<Derived, ModuleParams>` 为每个模块提供类型安全的单例、线程安全的命令环形缓冲区、FreeRTOS 任务调度以及 HFSM (层级有限状态机) 集成。派生类只需实现三个纯虚回调——`_init()` / `_update_feedback()` / `_fsm_execute()`——即可获得完整的模块生命周期管理。
-> 嵌入式开发前置知识：了解 C++ CRTP 模式、FreeRTOS 任务机制、HFSM 状态机
+------
 
-## Part 1: 代码详解 (Code Explanation)
+## 第一部分：快速使用
 
-### 1. 核心设计理念
+> 目标：15 分钟内完成一个新模块的开发框架。
 
-- **CRTP 静态多态**: `module_base_t<Derived, ModuleParams>` 以派生类自身作为第一个模板参数，编译期绑定类型。这避免了 `virtual` 派发的运行时开销，同时 `instance()` 能返回正确的派生类指针。
+### 1. 六步创建模块
 
-- **ModuleParams 聚合类型**: 新版的第二个模板参数是一个聚合结构体，统一声明三个类型别名：
-  - `CmdType` — 继承自 `cmd_base_t` 的命令类型，定义模块对外接收的控制指令
-  - `ModuleDeps` — 模块依赖类型（驱动指针、算法对象等），在 `configure()` 中注入
-  - `ModuleCtx` — 模块运行时上下文，由基类统一持有 `_ctx`，派生类通过继承直接访问
+以下以 `screw_gimbal_t`（丝杆云台）为例。
 
-- **基类统一持有 `_ctx`**: 不同于旧版派生类自己定义、持有和暴露 context，新版 `module_base_t` 内部声明 `ModuleCtx _ctx`（`protected`），派生类直接使用 `_ctx` 即可，无需重复定义。
+#### 步骤 1：定义命令类型
 
-### 2. 关键实现机制
-
-#### A. 命令环形缓冲区 (`set_command` / `_update_command`)
-
-- **无锁化生产-消费**: 基类内部维护一个 `CmdType _cmd_buffer[CMD_BUF_SIZE]` (默认 16，建议为 2 的幂)，配合 `_head` (写指针) / `_tail` (读指针) 构成环形 FIFO。
-
-- **生产者 (`set_command`)**: 被外部线程调用（如通信任务）。在 `scoped_mutex_t` 保护下判断 `(head + 1) % BUF_SIZE != tail`。若缓冲区未满，写入并推进 `_head`；若已满，返回 `false` 丢弃新命令，防止覆盖未执行的旧轨迹。
-
-- **消费者 (`_update_command`)**: 在主循环的 `_run_loop_impl()` 开头被调用（同线程，无需锁）。若 `_head != _tail`，读取 `_cmd_buffer[_tail]` 到 `_current_cmd` 并推进 `_tail`；若为空，保持 `_current_cmd` 不变 (零阶保持, Zero-Order Hold)，确保控制量连续。
-
-#### B. 内部任务循环 (`_run_loop_impl`)
-
-```text
-┌─────────────────────────────────────────┐
-│  while (true) {                         │
-│    _update_command();    // 消费命令     │
-│    _update_feedback();   // 更新反馈     │
-│    _fsm_execute();       // 执行状态机   │
-│    vTaskDelayUntil(&xLastWakeTime, 1ms);│
-│  }                                      │
-└─────────────────────────────────────────┘
-```
-
-- **1kHz 固定频率**: 使用 `vTaskDelayUntil()` 实现严格的 1ms 周期调度，不受循环体耗时波动影响。
-
-- **`module_task_t` 代理**: 基类内部定义一个 `module_task_t`（继承自 `task_base_t`），在 `init()` 中回调派生类的 `_init()`，在 `run_loop()` 中回调 `_run_loop_impl()`。`start()` 即调用 `_task.start()` 创建 FreeRTOS 任务。
-
-#### C. 配置注入 (`configure`)
-
-- **启动前注入**: `configure(const ModuleDeps &deps)` 将外部配置（驱动指针、PID 参数等）写入 `_module_deps`。**必须在 `start()` 之前调用**，因为任务启动后就进入 `_init()`，而 `_init()` 通常将 `_module_deps` 赋值到 `_ctx` 中供后续使用。
-
-- **非线程安全**: `configure()` 不加锁，假设在系统初始化阶段（调度器启动前或任务启动前）单线程调用。
-
-#### D. CRTP 单例 (`instance()`)
+命令继承 `cmd_base_t`，包含 `mode`（PASSIVE/ACTIVE）和 `timestamp`。在命令结构体中添加模块所需的控制字段。
 
 ```cpp
-static Derived *instance()
+struct screw_gimbal_cmd_t final : public cmd_base_t
 {
-    static Derived _instance_obj;  // 函数内 static，延迟初始化
-    return &_instance_obj;
+    float pitch_delta_angle;
+    float yaw_delta_angle;
+    bool trigger_calibration;
+    bool sling_mode;
+    bool autoaim_mode;
+    bool track_en;
+    float target_pitch;
+    float target_yaw;
+
+    screw_gimbal_cmd_t()
+        : pitch_delta_angle(0.0f), yaw_delta_angle(0.0f),
+          trigger_calibration(false), sling_mode(false),
+          autoaim_mode(false), track_en(false),
+          target_pitch(0.0f), target_yaw(0.0f)
+    {
+    }
+};
+```
+
+> **要点：** 构造函数中所有字段必须显式初始化为安全默认值。
+
+#### 步骤 2：定义模块依赖类型
+
+依赖是模块外部注入的资源（电机句柄、PID/观测器对象等），通过 `configure()` 在模块启动前注入。
+
+```cpp
+struct screw_gimbal_deps_t
+{
+    struct motor_deps_t
+    {
+        motor_base_t *pitch{nullptr};
+        motor_base_t *yaw{nullptr};
+    };
+
+    struct pid_deps_t
+    {
+        pid_t *pitch_pos{nullptr};
+        pid_t *pitch_spd{nullptr};
+        pid_t *pitch_auto_pos{nullptr};
+        pid_t *pitch_auto_spd{nullptr};
+        pid_t *yaw_pos{nullptr};
+        pid_t *yaw_spd{nullptr};
+        pid_t *yaw_relative_pos{nullptr};
+        pid_t *yaw_relative_spd{nullptr};
+        leso_t<3> *yaw_pos_leso{nullptr};
+        leso_t<2> *yaw_spd_leso{nullptr};
+        leso_t<3> *yaw_pos_imu_leso{nullptr};
+        leso_t<2> *yaw_spd_imu_leso{nullptr};
+    };
+
+    motor_deps_t motor_deps{};
+    pid_deps_t pid_deps{};
+};
+```
+
+> **要点：** 所有指针默认初始化为 `nullptr`，依赖按功能分组为子结构体。
+
+#### 步骤 3：定义数据上下文
+
+数据上下文存放模块运行时的动态状态——传感器读数、控制中间量、输出值等。
+
+```cpp
+struct screw_gimbal_data_ctx_t
+{
+    bool is_calibrating{false};
+    bool has_initial_calibrated{false};
+
+    float pitch_imu_rad{0};
+    float pitch_imu_radps{0};
+    float yaw_imu_rad{0};
+    float yaw_imu_radps{0};
+
+    float current_pitch_motor_rad{0};
+    float current_pitch_motor_radps{0};
+
+    float target_pitch_rad{0};
+    float target_pitch_radps{0};
+    float target_yaw_rad{0};
+    float target_yaw_radps{0};
+
+    float out_pitch_torque{0};
+    float out_yaw_torque{0};
+    // ... 更多状态字段
+};
+```
+
+> **要点：** 所有字段使用安全的默认值初始化。
+
+#### 步骤 4：组合模块上下文
+
+将依赖引用、数据上下文、命令指针组合为统一的上下文类型。
+
+```cpp
+struct screw_gimbal_context_t
+{
+    screw_gimbal_deps_t::motor_deps_t motor;
+    screw_gimbal_deps_t::pid_deps_t pid;
+    screw_gimbal_data_ctx_t data;
+    screw_gimbal_cmd_t *cmd{};
+};
+```
+
+| 字段            | 来源                                           | 说明               |
+| --------------- | ---------------------------------------------- | ------------------ |
+| `motor` / `pid` | `_module_deps` → `_ctx`（在 `_init()` 中赋值） | 外部注入的依赖引用 |
+| `data`          | 模块自身维护                                   | 运行时的动态数据   |
+| `cmd`           | `_current_cmd`（在 `_fsm_execute()` 中赋值）   | 指向当前命令的指针 |
+
+#### 步骤 5：定义参数聚合类型
+
+```cpp
+struct screw_gimbal_module_params_t
+{
+    using CmdType    = screw_gimbal_cmd_t;
+    using ModuleDeps = screw_gimbal_deps_t;
+    using ModuleCtx  = screw_gimbal_context_t;
+};
+```
+
+> **三个别名缺一不可。** 基类通过它们推导所有内部类型。
+
+#### 步骤 6：实现模块类
+
+```cpp
+class screw_gimbal_t final
+    : public module_base_t<screw_gimbal_t, screw_gimbal_module_params_t>
+{
+    friend class module_base_t<screw_gimbal_t, screw_gimbal_module_params_t>;
+
+  public:
+    using data_ctx_t       = screw_gimbal_data_ctx_t;
+    using gimbal_context_t = screw_gimbal_context_t;
+
+  private:
+    screw_gimbal_t();
+    ~screw_gimbal_t() override = default;
+
+    // --- 基类接口（必须实现）---
+    status_t _init() override;
+    void _update_feedback() override;
+    void _fsm_execute() override;
+
+    // --- 私有辅助方法 ---
+    void _gimbal_control();
+    void _gimbal_autoaim_control();
+    void _gimbal_sling_control();
+    static void _send_motor_command(screw_gimbal_module_params_t::ModuleCtx *ctx);
+
+    // --- 状态机定义 ---
+    using owner = screw_gimbal_t;
+
+    struct fsm_passive_t : public fsm_t<owner> { /* ... */ };
+    struct fsm_active_t : public fsm_t<owner> { /* ... */ };
+
+    fsm_passive_t _fsm_passive;
+    fsm_active_t _fsm_active;
+    fsm_t<owner> _main_fsm;
+};
+```
+
+------
+
+### 2. 三个必须实现的回调
+
+#### `_init()` — 初始化
+
+```cpp
+status_t screw_gimbal_t::_init()
+{
+    _ctx.motor = _module_deps.motor_deps;
+    _ctx.pid   = _module_deps.pid_deps;
+    return PYRO_OK;
 }
 ```
 
-- **延迟构造**: 首次调用 `instance()` 时才构造对象，避免全局静态初始化顺序问题。
-- **类型安全**: 返回 `Derived *` 而非基类指针，无需 `dynamic_cast`。
-- **派生类构造**: 构造函数为 `private`，仅 `instance()` 可调用，确保全局唯一。构造函数中必须调用基类构造函数 `module_base_t("name")` 传入任务名。
+将 `_module_deps` 中通过 `configure()` 注入的资源复制到 `_ctx` 中。
 
-#### E. get_ctx()
-
-基类提供 `const` 版本的 `get_ctx()`：
+#### `_update_feedback()` — 反馈更新（每 1ms）
 
 ```cpp
-[[nodiscard]] const ModuleCtx &get_ctx() const;
-```
-
-返回的是 `_ctx` 的只读引用。外部使用者通过 `Module::instance()->get_ctx()` 获取模块状态进行监控/日志，而模块内部通过 `_ctx` 直接读写。
-
-### 3. 模块生命周期
-
-```text
-  构造 (instance() 首次调用)
-    │
-    ▼
-  configure(deps)    ← 注入驱动、算法等依赖
-    │
-    ▼
-  start()            ← 创建 FreeRTOS 任务
-    │
-    ▼
-  _init()            ← 任务初始化回调：将 _module_deps 赋值到 _ctx
-    │
-    ▼
-  ┌─ while(true) ──────────────────────────┐
-  │ _update_command()  ← 消费环形缓冲区     │
-  │ _update_feedback() ← 读取传感器/驱动    │
-  │ _fsm_execute()     ← 状态机 + 控制算法  │
-  │ vTaskDelayUntil(1ms)                   │
-  └────────────────────────────────────────┘
-    │
-    ▼
-  set_command(cmd)    ← 外部线程随时写入命令
-```
-
-## Part 2: 快速使用 (Quick Start)
-
-### 1. 准备工作
-
-确保工程已包含以下头文件依赖：
-- `pyro_module_base.h` — 模块基类
-- `pyro_core_def.h` — `status_t` 枚举 (`PYRO_OK` / `PYRO_ERROR`)
-- `pyro_core_fsm.h` — HFSM 框架（可选，若模块需要状态机）
-- `FreeRTOS.h` / `cmsis_os.h` — FreeRTOS
-
-### 2. 最小模块模板
-
-```cpp
-#include "pyro_module_base.h"
-
-namespace pyro
+void screw_gimbal_t::_update_feedback()
 {
+    // 1. 刷新电机反馈
+    _ctx.motor.pitch->update_feedback();
+    _ctx.motor.yaw->update_feedback();
 
-// ==========================================
-// 1. 命令类型
-// ==========================================
+    // 2. 读取电机原始数据并做运动学解算
+    float now_pitch_rotor_rad = _ctx.motor.pitch->get_current_position();
+    // ... 过零点处理、角速度解算 ...
+
+    // 3. 读取 IMU
+    ins_drv_t::get_instance()->get_rads_n(
+        &_ctx.data.yaw_imu_rad, &_ctx.data.pitch_imu_rad, &_ctx.data.roll_imu_rad);
+
+    // 4. 通信数据同步
+    _communicate_chassis();
+    _calculate_relative_angles();
+}
+```
+
+**常见模式：**
+
+- 调用 `motor->update_feedback()` 刷新各电机数据
+- 通过 `get_current_position()` / `get_current_rotate()` / `get_current_torque()` 读取反馈
+- 读取 IMU 等传感器数据
+- 执行运动学解算，将原始数据转换为 `_ctx.data` 中的工程值
+
+#### `_fsm_execute()` — 状态机调度（每 1ms）
+
+```cpp
+void screw_gimbal_t::_fsm_execute()
+{
+    _ctx.cmd = &_current_cmd;
+
+    bool allow_active = (cmd_base_t::mode_t::ACTIVE == _ctx.cmd->mode);
+
+    if (_ctx.data.is_calibrating || !_ctx.data.has_initial_calibrated)
+        allow_active = false;  // 安全互锁
+
+    if (allow_active)
+        _main_fsm.change_state(&_fsm_active);
+    else
+        _main_fsm.change_state(&_fsm_passive);
+
+    _main_fsm.execute(this);
+}
+```
+
+> **标准模式：** 根据 `_current_cmd.mode` 切换 PASSIVE / ACTIVE 顶层状态，然后调用 `_main_fsm.execute(this)`。
+
+------
+
+### 3. 构造函数模板
+
+```cpp
+screw_gimbal_t::screw_gimbal_t() : module_base_t("screw_gimbal")
+{
+    _ctx = {};  // 清零整个上下文
+}
+```
+
+- 第一个参数是任务名称（用于 FreeRTOS 调试）
+- 可选的栈大小和优先级参数有默认值：`init_stack=512`, `loop_stack=256`, `priority=HIGH`
+
+------
+
+### 4. 应用层：启动与命令下发
+
+#### 初始化线程
+
+```cpp
+void hero_gimbal_init(void *argument)
+{
+    board_drv_ptr        = &pyro::board_drv_t::get_instance();
+    screw_gimbal_cmd_ptr = new pyro::screw_gimbal_cmd_t();
+    screw_gimbal_ptr     = pyro::screw_gimbal_t::instance();
+
+    deps_init();                                     // 创建并配置依赖
+    screw_gimbal_ptr->configure(*screw_gimbal_deps); // 注入依赖
+    screw_gimbal_ptr->start();                       // 启动模块任务
+
+    xTaskCreate(hero_gimbal_thread, "start_app_thread", 128, nullptr,
+                configMAX_PRIORITIES - 1, &gimbal_task_handle);
+    vTaskDelete(nullptr);
+}
+```
+
+#### 命令线程
+
+```cpp
+void hero_gimbal_thread(void *argument)
+{
+    while (true)
+    {
+        uint32_t notify_val = 0;
+        xTaskNotifyWait(0x00, UINT32_MAX, &notify_val, 0);
+
+        // 处理按键事件 → 更新 cmd 字段
+        if (notify_val & EVENT_BIT_SLING_TOGGLE)
+            is_sling_mode = !is_sling_mode;
+
+        // 读取遥控器 → 填充 cmd
+        screw_gimbal_cmd_ptr->mode = pyro::cmd_base_t::mode_t::ACTIVE;
+        screw_gimbal_cmd_ptr->pitch_delta_angle = -vrc.axes.ry * 0.0025f;
+        screw_gimbal_cmd_ptr->yaw_delta_angle   = -vrc.axes.rx * 0.0035f;
+
+        // 下发命令
+        screw_gimbal_ptr->set_command(*screw_gimbal_cmd_ptr);
+        vTaskDelay(1);
+    }
+}
+```
+
+> **要点：** 命令线程通过 `set_command()` 写入环形缓冲区，模块循环通过 `_update_command()` 消费（线程安全）。
+
+------
+
+### 5. 生命周期速查
+
+```
+new CmdType()  ──→ configure(deps)  ──→ start()  ──→ 循环运行 ──→ 析构
+       │                                              │
+       └── set_command() ←── 遥控器/上位机 ──────────┘
+```
+
+| 阶段   | 调用的方法                                          | 说明                                   |
+| ------ | --------------------------------------------------- | -------------------------------------- |
+| 创建   | `instance()`                                        | CRTP 单例，首次调用时构造              |
+| 配置   | `configure(deps)`                                   | 注入依赖，必须在 `start()` 前调用      |
+| 启动   | `start()`                                           | 创建 FreeRTOS 任务，自动调用 `_init()` |
+| 运行时 | `set_command(cmd)`                                  | 线程安全写入，环形缓冲区 FIFO          |
+| 循环   | `_init()` → `_update_feedback()` → `_fsm_execute()` | 1ms 周期                               |
+
+------
+
+### 6. 完整模块模板
+
+```cpp
+// =========================================================
+// 1. 命令定义
+// =========================================================
 struct my_module_cmd_t final : public cmd_base_t
 {
-    float target_value{0.0f};
+    // 控制字段...
+
+    my_module_cmd_t()
+    {
+        // 安全默认值...
+    }
 };
 
-// ==========================================
-// 2. 依赖类型（无依赖时也需定义空结构体）
-// ==========================================
+// =========================================================
+// 2. 依赖定义
+// =========================================================
 struct my_module_deps_t
 {
+    motor_base_t *motor{nullptr};
+    pid_t *pid{nullptr};
 };
 
-// ==========================================
-// 3. 运行时上下文
-// ==========================================
-struct my_module_ctx_t
+// =========================================================
+// 3. 数据上下文
+// =========================================================
+struct my_module_data_ctx_t
 {
-    my_module_cmd_t *cmd{nullptr};
-    float current_value{0.0f};
+    float value{0.0f};
 };
 
-// ==========================================
-// 4. ModuleParams 聚合
-// ==========================================
+// =========================================================
+// 4. 模块上下文
+// =========================================================
+struct my_module_context_t
+{
+    motor_base_t *motor;
+    pid_t *pid;
+    my_module_data_ctx_t data;
+    my_module_cmd_t *cmd{};
+};
+
+// =========================================================
+// 5. 参数聚合
+// =========================================================
 struct my_module_params_t
 {
     using CmdType    = my_module_cmd_t;
     using ModuleDeps = my_module_deps_t;
-    using ModuleCtx  = my_module_ctx_t;
+    using ModuleCtx  = my_module_context_t;
 };
 
-// ==========================================
-// 5. 模块类
-// ==========================================
+// =========================================================
+// 6. 模块类
+// =========================================================
 class my_module_t final
     : public module_base_t<my_module_t, my_module_params_t>
 {
     friend class module_base_t<my_module_t, my_module_params_t>;
 
-private:
-    my_module_t()
-        : module_base_t("my_module")  // 传入任务名
-    {
-        _ctx = {};
-    }
+  public:
+    using data_ctx_t = my_module_data_ctx_t;
 
-    status_t _init() override
-    {
-        // _module_deps 已在 configure() 中注入
-        return PYRO_OK;
-    }
+  private:
+    my_module_t();
+    ~my_module_t() override = default;
 
-    void _update_feedback() override
-    {
-        // 读取传感器、更新 _ctx.data
-    }
+    status_t _init() override;
+    void _update_feedback() override;
+    void _fsm_execute() override;
 
-    void _fsm_execute() override
-    {
-        _ctx.cmd = &_current_cmd;
+    // --- 业务方法 ---
+    void _control();
 
-        // 根据 cmd 执行控制逻辑
-        if (_ctx.cmd->mode == cmd_base_t::mode_t::ACTIVE)
-        {
-            _ctx.current_value = _ctx.cmd->target_value;
-        }
-    }
+    // --- 状态机 ---
+    using owner = my_module_t;
+    struct state_passive_t final : public state_t<owner> { /* ... */ };
+    struct fsm_active_t final : public fsm_t<owner>     { /* ... */ };
+
+    state_passive_t _state_passive;
+    fsm_active_t _state_active;
+    fsm_t<owner> _main_fsm;
 };
-
-} // namespace pyro
 ```
 
-### 3. 功能示例
+------
 
-#### 场景 A：注入依赖并启动模块
+### 7. 快速参考：基类 API
 
-通常在 `main()` 或初始化任务中完成：
+#### 公共接口
 
-```cpp
-#include "my_module.h"
+| 方法                                     | 说明                                     |
+| ---------------------------------------- | ---------------------------------------- |
+| `static Derived *instance()`             | CRTP 单例                                |
+| `status_t start()`                       | 启动 FreeRTOS 任务                       |
+| `bool set_command(const CmdType &cmd)`   | 线程安全写入环形缓冲区，满时返回 `false` |
+| `void configure(const ModuleDeps &deps)` | 注入模块依赖（`start()` 前调用）         |
+| `mutex_t &get_mutex()`                   | 获取模块互斥锁                           |
+| `const ModuleCtx &get_ctx() const`       | 获取模块上下文（只读）                   |
 
-void app_init()
-{
-    auto *module = pyro::my_module_t::instance();
+#### 派生类必须实现
 
-    // 1. 准备依赖（如果有驱动指针等）
-    pyro::my_module_deps_t deps{};
+| 虚函数                    | 调用时机           | 职责                                |
+| ------------------------- | ------------------ | ----------------------------------- |
+| `status_t _init()`        | 任务启动时（一次） | 从 `_module_deps` 复制依赖到 `_ctx` |
+| `void _update_feedback()` | 每 1ms             | 刷新传感器和电机反馈                |
+| `void _fsm_execute()`     | 每 1ms             | 根据命令调度状态机                  |
 
-    // 2. 注入依赖（必须在 start() 之前）
-    module->configure(deps);
+#### 派生类可访问的 protected 成员
 
-    // 3. 启动模块任务
-    if (PYRO_OK != module->start())
-    {
-        Error_Handler();
-    }
-}
+| 成员           | 类型         | 说明                                   |
+| -------------- | ------------ | -------------------------------------- |
+| `_current_cmd` | `CmdType`    | 当前正在执行的命令                     |
+| `_module_deps` | `ModuleDeps` | 通过 `configure()` 注入的依赖          |
+| `_ctx`         | `ModuleCtx`  | 模块上下文（基类持有，派生类直接使用） |
+
+------
+
+## 第二部分：代码详解
+
+> 目标：深入理解 `module_base_t` 的架构设计、HFSM 状态机机制及内部运行原理。
+
+### 1. 架构概览
+
+```
+┌─────────────── Application Layer ───────────────┐
+│  init thread          command thread             │
+│  - new cmd            - rc → cmd 转换             │
+│  - new deps           - set_command() 下发        │
+│  - configure()                                  │
+│  - start()                                       │
+└────────────────────┬─────────────────────────────┘
+                     │
+┌────────────────────▼── Module Layer ──────────────┐
+│  module_base_t<Derived, ModuleParams>             │
+│  ┌─────────────────────────────────────────────┐ │
+│  │ 环形缓冲区 (CMD_BUF_SIZE=16)                 │ │
+│  │ _update_command() → _current_cmd            │ │
+│  │ _update_feedback() → 传感器/电机数据刷新      │ │
+│  │ _fsm_execute()    → 状态机调度               │ │
+│  └─────────────────────────────────────────────┘ │
+│  每 1ms 循环执行一次 (FreeRTOS 任务)              │
+└──────────────────────────────────────────────────┘
 ```
 
-#### 场景 B：从外部发送命令
+核心循环（`_run_loop_impl`）以 1ms 为周期，顺序执行：
 
-其他任务（如通信解析任务）通过 `set_command()` 向模块发送指令：
+1. `_update_command()` — 从环形缓冲区取出最新命令（Zero-Order Hold）
+2. `_update_feedback()` — 刷新传感器、电机反馈数据
+3. `_fsm_execute()` — 根据命令模式调度状态机
 
-```cpp
-void comm_task()
-{
-    pyro::my_module_cmd_t cmd;
-    cmd.mode          = pyro::cmd_base_t::mode_t::ACTIVE;
-    cmd.target_value  = 1.5f;
-    cmd.timestamp     = xTaskGetTickCount();
+------
 
-    bool accepted = pyro::my_module_t::instance()->set_command(cmd);
+### 2. HFSM 状态机模式
 
-    if (!accepted)
-    {
-        // 命令缓冲区已满，丢弃本次命令
-        // 可记录日志或稍后重试
-    }
-}
+每个模块使用二级层级状态机。`fsm_t` 继承自 `state_t`，这意味着一个状态机本身也是一个状态，可以嵌套到父状态机中。
+
+```
+_main_fsm (fsm_t<owner>)
+├── _fsm_passive / _state_passive
+│   ├── calibration_state  (校准)
+│   └── idle_state         (待机)
+└── _fsm_active / _state_active
+    ├── normal_state       (常规控制)
+    ├── autoaim_state      (自瞄)
+    └── sling_state        (吊射)
 ```
 
-#### 场景 C：带驱动依赖的完整模块
+#### 简单状态（单层，无子状态）
 
-一个典型的带 CAN 通信和电机驱动的模块：
+继承 `state_t<owner>`，实现三个生命周期钩子：
 
 ```cpp
-// --- my_module_deps_t 定义 ---
-struct motor_ctrl_deps_t
+struct state_passive_t final : public state_t<owner>
 {
-    pyro::motor_base_t *motor{nullptr};
-    pyro::pid_t *pid_pos{nullptr};
-    pyro::pid_t *pid_spd{nullptr};
+    void enter(owner *owner) override;
+    void execute(owner *owner) override;
+    void exit(owner *owner) override;
 };
+```
 
-struct motor_ctrl_ctx_t
+#### 复合状态（嵌套子状态机）
+
+继承 `fsm_t<owner>`，既可拥有子状态，也可覆盖自身的生命周期钩子：
+
+```cpp
+struct fsm_active_t final : public fsm_t<owner>
 {
-    pyro::motor_base_t *motor{nullptr};
-    pyro::pid_t *pid_pos{nullptr};
-    pyro::pid_t *pid_spd{nullptr};
-    float current_position{0.0f};
-    float current_velocity{0.0f};
-    float output_torque{0.0f};
-    motor_ctrl_cmd_t *cmd{nullptr};
+    struct cruising_state_t final : public state_t<owner> { /* ... */ };
+    struct climbing_fsm_t final : public fsm_t<owner>      { /* ... */ };
+
+    void on_enter(owner *owner) override;
+    void on_execute(owner *owner) override;
+    void on_exit(owner *owner) override;
+
+  private:
+    cruising_state_t cruising_state;
+    climbing_fsm_t climbing_fsm;
 };
+```
 
-// --- _init() 中桥接依赖到上下文 ---
-status_t motor_ctrl_t::_init()
-{
-    _ctx.motor   = _module_deps.motor;
-    _ctx.pid_pos = _module_deps.pid_pos;
-    _ctx.pid_spd = _module_deps.pid_spd;
+#### 关键区别
 
-    if (nullptr == _ctx.motor || nullptr == _ctx.pid_pos || nullptr == _ctx.pid_spd)
-        return PYRO_ERROR;
+| 基类             | 生命周期钩子                                                 | 子状态 | 用途     |
+| ---------------- | ------------------------------------------------------------ | ------ | -------- |
+| `state_t<owner>` | `enter()` / `execute()` / `exit()`                           | 无     | 叶子状态 |
+| `fsm_t<owner>`   | `on_enter()` / `on_execute()` / `on_exit()` + `change_state()` | 有     | 组合状态 |
 
-    return PYRO_OK;
-}
+#### PASSIVE / ACTIVE 切换模式
 
-// --- _update_feedback() 中读取 ---
-void motor_ctrl_t::_update_feedback()
-{
-    _ctx.motor->update_feedback();
-    _ctx.current_position = _ctx.motor->get_current_position();
-    _ctx.current_velocity = _ctx.motor->get_current_rotate();
-}
-
-// --- _fsm_execute() 中控制 ---
+```cpp
 void motor_ctrl_t::_fsm_execute()
 {
     _ctx.cmd = &_current_cmd;
 
     if (_ctx.cmd->mode == cmd_base_t::mode_t::ACTIVE)
-    {
-        float spd_ref = _ctx.pid_pos->calculate(_ctx.cmd->target_position, _ctx.current_position);
-        _ctx.output_torque = _ctx.pid_spd->calculate(spd_ref, _ctx.current_velocity);
-        _ctx.motor->send_torque(_ctx.output_torque);
-    }
-}
+        _main_fsm.change_state(&_state_active);
+    else
+        _main_fsm.change_state(&_state_passive);
 
-// --- 外部注入示例 ---
-void app_init()
-{
-    motor_ctrl_deps_t deps;
-    deps.motor   = &g_motor;    // 全局电机对象
-    deps.pid_pos = &g_pid_pos;  // 全局位置 PID
-    deps.pid_spd = &g_pid_spd;  // 全局速度 PID
-
-    auto *module = motor_ctrl_t::instance();
-    module->configure(deps);
-    module->start();
+    _main_fsm.execute(this);
 }
 ```
 
-#### 场景 D：模块间通过 get_ctx() 通信
+------
 
-下游模块（如底盘）需要读取上游模块（如云台）的状态：
+### 3. 模块生命周期详解
+
+```
+new CmdType()          ──→ configure(deps)  ──→ start()  ──→ 循环运行 ──→ 析构
+       │                                              │
+       └── set_command() ←── 遥控器/上位机 ──────────┘
+```
+
+| 阶段   | 调用的方法                                          | 说明                                   |
+| ------ | --------------------------------------------------- | -------------------------------------- |
+| 创建   | `instance()`                                        | CRTP 单例，首次调用时构造              |
+| 配置   | `configure(deps)`                                   | 注入依赖，必须在 `start()` 前调用      |
+| 启动   | `start()`                                           | 创建 FreeRTOS 任务，自动调用 `_init()` |
+| 运行时 | `set_command(cmd)`                                  | 线程安全写入，环形缓冲区 FIFO          |
+| 循环   | `_init()` → `_update_feedback()` → `_fsm_execute()` | 1ms 周期                               |
+
+------
+
+### 4. 任务规划器
 
 ```cpp
-void chassis_t::_fsm_execute()
+void start_mission_planer_task(void const *argument)
 {
-    // 读取云台模块的上下文（只读）
-    const auto &gimbal_ctx = screw_gimbal_t::instance()->get_ctx();
+    xTaskCreate(pyro_init_thread, "pyro_init_thread", 512, nullptr,
+                configMAX_PRIORITIES - 1, nullptr);
 
-    // 获取云台当前姿态
-    float gimbal_yaw   = gimbal_ctx.data.yaw_imu_rad;
-    float gimbal_pitch = gimbal_ctx.data.pitch_imu_rad;
+#if BOARD == GIMBAL_BOARD
+    xTaskCreate(hero_gimbal_init, "pyro_gimbal_init", 512, nullptr,
+                configMAX_PRIORITIES - 2, nullptr);
+    vTaskDelay(10);
+    xTaskCreate(hero_booster_init, "pyro_booster_init", 512, nullptr,
+                configMAX_PRIORITIES - 2, nullptr);
+#elif BOARD == CHASSIS_BOARD
+    xTaskCreate(hero_chassis_init, "pyro_chassis_init", 512, nullptr,
+                configMAX_PRIORITIES - 2, nullptr);
+#endif
 
-    // 底盘根据云台姿态调整运动策略...
+    xTaskCreate(hero_board_com_init, "pyro_board_com_init", 512, nullptr,
+                configMAX_PRIORITIES - 2, nullptr);
+
+    vTaskDelete(nullptr);
 }
 ```
 
-### 4. 注意事项 (Caveats)
+------
 
-1. **`configure()` 必须在 `start()` 之前调用**: 模块任务启动后立即执行 `_init()`，若此时 `_module_deps` 尚未填充，将导致空指针访问。
+### 5. 设计决策 FAQ
 
-2. **`set_command()` 可在任意线程调用**: 内部已用 `scoped_mutex_t` 保护环形缓冲区，线程安全。但若缓冲区满（16 条未消费命令），新命令将被丢弃并返回 `false`。
+#### `_ctx` 在哪里定义？
 
-3. **`_update_feedback()` 和 `_fsm_execute()` 在模块任务线程中执行**: 这两个函数中无需额外加锁，它们与 `_update_command()` 在同一线程中顺序执行。
+`_ctx` 是 `module_base_t` 的 `protected` 成员，类型为 `ModuleCtx`。派生类直接使用 `_ctx.xxx` 即可，无需自己声明。
 
-4. **避免在回调中长时间阻塞**: 模块循环以 1kHz 运行（1ms/周期），若三个回调总耗时超过 1ms，将导致任务周期漂移。耗时操作应放在中断或 DMA 中完成。
+#### `_ctx` 在什么时候需要清零？
 
-5. **`_ctx` 初始化**: 在构造函数中务必执行 `_ctx = {}` 将所有成员归零，避免未初始化的浮点数/指针导致不确定行为。
+在构造函数中：
 
-6. **ModuleCtx 必须是完整类型**: 由于基类内部持有 `ModuleCtx _ctx`，`ModuleCtx` 必须在模块类继承基类之前定义完成。不能将 `ModuleCtx` 定义在模块类内部（否则为 incomplete type）。
+```cpp
+my_module_t::my_module_t() : module_base_t("my_module")
+{
+    _ctx = {};
+}
+```
 
-7. **命令缓冲区大小**: 默认 `CMD_BUF_SIZE = 16`。如果生产者写入速度持续高于消费者消费速度（1kHz），缓冲区最终会满。合理设计命令频率，或增大缓冲区。
+#### 命令为什么用环形缓冲区？
 
-8. **构造函数私有**: 模块构造函数必须为 `private`，仅通过 `instance()` 创建实例。构造函数中调用基类构造函数时传入任务名（用于 FreeRTOS 调试），可选的栈大小和优先级参数见头文件。
+`set_command()` 可能被遥控器线程高频调用，环形缓冲区解耦了生产者（命令线程）和消费者（模块循环），避免锁竞争。缓冲区大小为 16 条（2 的幂），满时丢弃新命令。
 
-## Q&A
+#### `ModuleCtx` 为什么必须定义在类外？
+
+因为 `module_base_t` 持有 `ModuleCtx _ctx` 成员，在基类实例化时需要 `ModuleCtx` 的完整定义。嵌套在模块类内部的类型在继承基类时尚不完整。
+
+#### 电机和 PID 为什么放在 `_ctx` 中而不是直接用 `_module_deps`？
+
+`_module_deps` 保存的是原始注入值。`_ctx` 中的 `motor`/`pid` 在 `_init()` 中被赋值后，所有状态机状态通过 `owner->_ctx.xxx` 访问，路径统一。这是约定而非强制。
