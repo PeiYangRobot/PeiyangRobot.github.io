@@ -41,6 +41,7 @@ export default defineConfig({
           text: 'PYRo-uCtrl-Unity',
           items: [
             { text: '简介', link: '/PYRo-uCtrl-Unity/intro' },
+            { text: '如何上手', link: '/PYRo-uCtrl-Unity/how_to_use' },
             { text: '开发须知', collapsed: true, items: [
               { text: '代码规范', link:'/PYRo-uCtrl-Unity/notice_before_start/code' },
               { text: '文档规范', link:'/PYRo-uCtrl-Unity/notice_before_start/doc' },

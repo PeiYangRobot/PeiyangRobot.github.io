@@ -451,3 +451,15 @@ jobs:
 ```
 
 注意这里的 members 要填写用户名而非昵称，path 要填写从根目录开始的完整路径。
+
+<script setup>
+import { VPTeamMembers } from 'vitepress/theme'
+import { mem4 } from '../../public/member_list/members'
+
+const author = [
+  mem4,
+]
+</script>
+Author
+---
+<VPTeamMembers size="small" :members="author" />
