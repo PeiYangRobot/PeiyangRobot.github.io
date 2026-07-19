@@ -93,6 +93,8 @@ node->safe_cmd = node->last_controlled_cmd + node->uncontrolled_cmd;
 
 ## Part 2: 快速使用
 
+### 核心代码
+
 ```c++
 #include "pyro_power_control.h"
 
@@ -142,5 +144,124 @@ void chassis_power_loop()
     float total_power = pc.get_total_predicted_power();
 }
 ```
+
+### 数据处理
+
+```matlab
+%% 1. 从表格中提取原始数据
+% 确保工作区有导入的 wheel 表格变量
+torque_raw = wheel.torque;
+rpm_raw    = wheel.rpm;
+temp_raw   = wheel.temp;
+power_raw  = wheel.power;
+
+%% 2. 简单的安全过滤 (防患于未然)
+valid_idx = power_raw <= 500 & ~isnan(power_raw); 
+torque_raw = torque_raw(valid_idx);
+rpm_raw    = rpm_raw(valid_idx);
+temp_raw   = temp_raw(valid_idx);
+power_raw  = power_raw(valid_idx);
+
+%% 3. 【核心步骤】数据量级缩放 (防止解算器崩溃)
+SCALE_TORQUE = 10000.0;
+SCALE_RPM    = 1000.0;
+
+torque_scaled = torque_raw / SCALE_TORQUE;
+rpm_scaled    = rpm_raw / SCALE_RPM;
+
+%% 4. 低通滤波去噪 (预处理)
+window_size = 20; 
+disp('正在进行低通滤波去噪预处理...');
+torque_clean = smoothdata(torque_scaled, 'gaussian', window_size);
+rpm_clean    = smoothdata(rpm_scaled, 'gaussian', window_size);
+temp_clean   = smoothdata(temp_raw, 'gaussian', window_size); 
+power_clean  = smoothdata(power_raw, 'gaussian', window_size);
+
+% 将清洗后的输入数据合并为 N×3 的矩阵
+InputData = [torque_clean, rpm_clean, temp_clean];
+
+%% 5. 定义灰盒功率拟合模型 (固定 k5 = 0.75)
+% 待拟合参数保留 4 个：k(1)=k1(机械), k(2)=k2(铜损), k(3)=k3(高频摩擦), k(4)=k4(库仑摩擦)
+power_model = @(k, x) ...
+    k(2) .* max(1 + 0.00393 .* (x(:,3) - 20), 1) .* x(:,1).^2 ... % 铜损 (带温度修正)
+    + max(k(1) .* x(:,1) .* x(:,2), 0) ...                        % 机械功 (去除负功)
+    + k(3) .* x(:,2).^2 ...                                       % 高频摩擦损耗
+    + k(4) .* abs(x(:,2)) ...                                     % 库仑摩擦损耗
+    + 0.75;                                                       % 静态底噪固定为 0.75
+
+%% 6. 设置拟合参数并执行拟合
+k0 = [1.0, 1.0, 1.0, 1.0]; % 4 个初始猜测值
+lb = [0, 0, 0, 0];         % 限制所有的物理系数必须大于等于 0
+ub = [];                        
+
+options = optimoptions('lsqcurvefit', ...
+    'Display', 'iter', ...
+    'MaxFunctionEvaluations', 5000, ...
+    'MaxIterations', 1000, ...
+    'StepTolerance', 1e-8, ...
+    'OptimalityTolerance', 1e-8);
+
+disp('开始 4 参数非线性拟合运算...');
+[k_fit, resnorm, residual, exitflag] = lsqcurvefit(power_model, k0, InputData, power_clean, lb, ub, options);
+
+%% 7. 打印最终结果并自动还原系数 (直接输出 C++ 代码)
+% 计算决定系数 R-square
+SStot = sum((power_clean - mean(power_clean)).^2);
+SSres = sum(residual.^2);
+Rsq = 1 - SSres/SStot;
+
+% --- 核心修改：在后台自动除以比例，计算出真实的 C++ 物理系数 ---
+k1_restored = k_fit(1) / (SCALE_TORQUE * SCALE_RPM);
+k2_restored = k_fit(2) / (SCALE_TORQUE^2);
+k3_restored = k_fit(3) / (SCALE_RPM^2); % 高频项对应 rpm 的平方，除以 1000^2
+k4_restored = k_fit(4) / SCALE_RPM;
+
+fprintf('\n================ 拟合与还原结果 ================\n');
+fprintf('>>> 拟合优度 R-square (R²) = %.4f \n\n', Rsq);
+
+fprintf('【您可以直接复制以下代码到 C++ 文件中 (无需在控制循环除以比例)】\n');
+fprintf('------------------------------------------------------------\n');
+% 这里增加了精度到小数点后 8 位 (%.8f)，防止还原后 k3 等参数过小被截断为 0
+fprintf('params.k1 = %.8ff; // 机械功率项系数\n', k1_restored);
+fprintf('params.k2 = %.8ff; // 铜损/热损耗系数\n', k2_restored);
+fprintf('params.k3 = %.8ff; // 高频摩擦系数\n', k3_restored);
+fprintf('params.k4 = %.8ff; // 库仑摩擦系数\n', k4_restored);
+fprintf('params.k5 = 0.75f;         // 静态基础功耗 (强制固定)\n');
+fprintf('params.alpha = 0.00393f;\n');
+fprintf('------------------------------------------------------------\n');
+
+%% 8. 可视化：去噪效果与拟合效果对比
+figure('Name', '功率模型 4参数 拟合结果', 'Position', [100, 100, 1200, 500]);
+
+% 子图1：展示去噪效果
+subplot(1, 2, 1);
+plot(power_raw, 'Color', [0.8 0.8 0.8], 'DisplayName', '原始含噪 Power');
+hold on;
+plot(power_clean, 'b', 'LineWidth', 1.5, 'DisplayName', '低通滤波后 Power');
+title('Power 信号低通去噪效果');
+xlabel('采样序号');
+ylabel('Power (W)');
+legend('Location', 'best');
+grid on;
+
+% 子图2：模型拟合输出 vs 真实输出
+power_predict = power_model(k_fit, InputData);
+
+subplot(1, 2, 2);
+plot(power_clean, 'b', 'LineWidth', 1.5, 'DisplayName', '真实 Power (滤波后)');
+hold on;
+plot(power_predict, 'r', 'LineWidth', 1.2, 'DisplayName', '模型预测 Power');
+title(sprintf('模型拟合对比 (R^2 = %.4f)', Rsq));
+xlabel('采样序号');
+ylabel('Power (W)');
+legend('Location', 'best');
+grid on;
+```
+
+跑功控参数需要先关闭功控，接好功率计（使用方法请看[功率计的使用](../Component/Powermeter.md)），通过各种能抓取调试数据的软件导出一个包含电流（torque），转速（rpm），温度（temp），功率（power）的 csv 文件，可以用 jcom，ozone，vofa 等软件实现
+
+然后在 MATLAB 中新建脚本，将以上代码导入，通过`导入数据`功能将上述 csv 文件导入，导入时注意数据的表头名称必须准确，且将最上方的变量名称命名为`wheel`
+
+导入数据后运行代码，命令行窗口中将输出得到的参数 k1 ~ k5，直接复制到代码中即可
 
 ## Q&A
