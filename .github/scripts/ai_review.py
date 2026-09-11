@@ -1,9 +1,9 @@
 import sys
 import os
-from openai import OpenAI
+from anthropic import Anthropic
 
-client = OpenAI(
-    api_key=os.environ["GPT_API_KEY"],
+client = Anthropic(
+    api_key=os.environ["CLAUDE_API_KEY"],
     base_url="https://api.hanhegufei.online"
 )
 
@@ -19,15 +19,11 @@ system_prompt = """你是一位严谨的技术文档审查专家。该仓库是�
 输出要求：用简洁的 Markdown 列表输出，每条建议包含：文件路径、受影响行号范围（根据 diff 中的 @@ 信息推断）、问题类型和具体建议。如果变更中没有发现任何文档方面的问题，请直接回复"未发现明显问题"。不要点评代码逻辑、性能或安全问题，只专注于文档本身。"""
 
 try:
-    response = client.chat.completions.create(
-        model="gpt-5.6-luna",
-        temperature=0.0,
+    response = client.messages.create(
+        model="claude-sonnet-4-6",
         max_tokens=8192,
+        system=system_prompt,
         messages=[
-            {
-                "role": "system",
-                "content": system_prompt
-            },
             {
                 "role": "user",
                 "content": "请审查以下文档变更的差异：\n\n" + diff_content
@@ -35,7 +31,7 @@ try:
         ]
     )
 
-    result = response.choices[0].message.content
+    result = response.content[0].text
     if not result or not result.strip():
         result = "AI 审查完成：未发现明显问题。"
     print(result)

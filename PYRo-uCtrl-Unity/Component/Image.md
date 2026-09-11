@@ -7,21 +7,49 @@ File<Badge type = "info" text="pyro_image_drv.h"/><Badge type = "info" text="pyr
 
 该 `pyro_image_drv` 模块实现了与 RoboMaster 图传模块的双向通信。采用轻量级命令码白名单订阅机制进行接收过滤，发送侧使用零拷贝 DMA 整包缓冲区实现高效数据下发，适用于机器人端与自定义控制器/客户端之间的低开销数据交互。
 
-> 嵌入式开发前置知识：了解 RoboMaster 裁判系统通信协议 (0xA5 帧头格式)、STM32 UART DMA 传输、FreeRTOS 消息缓冲区
+> 前置知识：了解 RoboMaster 裁判系统通信协议、DMA 堆内存管理、FreeRTOS 消息缓冲区
 
 ## Part 1: 代码全解 (Code Deep Dive)
 
-### 1. 核心设计理念
+### 1.1 整体框架数据流
 
-- **轻量级白名单订阅**: 图传链路指令数量极少（最多订阅 4 个命令码），驱动不使用复杂的哈希表或 `std::bitset<1024>`，而是通过固定大小的数组线性遍历匹配，在 `N ≤ 4` 的条件下性能远优于大体积数据结构。
-- **零拷贝 DMA 发送**: 发送帧的帧头、负载、CRC 分布在同一个 `packet_t` 结构体中，该结构体内存通过 `pvPortDmaMalloc()` 分配在 DMA 可访问区域，应用层直接填充 payload 后调用 `send()` 即可触发 DMA 传输，全程无 `memcpy`。
-- **ISR → Task 消息传递**: UART 接收中断通过 FreeRTOS Message Buffer 将整帧数据传递给 `image_task_t` 任务，在任务上下文中完成 CRC 校验与帧解析。
+#### 数据方向（上位机 → MCU）
 
-### 2. 数据结构与协议编解码
+                    UART硬件接收中断
+                            ↓
+            rx_callback（ISR中断上下文，禁止耗时操作）
+                            ↓
+                白名单过滤：只处理已经订阅的cmd_id
+                            ↓
+    xMessageBufferSendFromISR 将完整帧送入FreeRTOS消息缓冲区（中断退出）
+                            ↓
+            image_task_t 任务线程阻塞等待消息缓冲区
+                            ↓
+                取出完整帧 → CRC8/CRC16双重校验
+                            ↓
+    solve_frame 解析帧，把payload拷贝到接收缓存，更新在线状态
 
-驱动内部通过 `#pragma pack(push, 1)` 确保数据包结构体紧凑对齐（1 字节对齐），完整数据包由帧头 + 命令码 + 负载 + CRC16 组成：
+#### 数据方向（MCU → 上位机）
+    
+           用户代码拿到payload引用(DMA内存)，直接填充数据
+                             ↓
+        调用 send_controller_data() / send_client_data()
+                             ↓
+            填充帧头SOF、data_length、seq序号、cmd_id
+                             ↓
+                    计算帧头CRC8、整包CRC16
+                             ↓
+        调用底层uart write（DMA发送，缓冲区位于DMA堆，无需二次拷贝）
+                             ↓
+            维护发包序列号_send_seq，发送失败回滚序号
 
-```c++
+### 1.2 帧协议与接收检验（任务中）
+
+帧结构`（#pragma pack(push,1)` 1 字节对齐，避免结构体填充字节），结构为：
+
+SOF (0xA5)  |   data_length |   seq |   crc8    |   cmd_id  |   payload |   CRC16
+
+```C++
 // pyro_image_drv.h
 #pragma pack(push, 1)
 struct tx_controller_packet_t
@@ -41,14 +69,56 @@ struct tx_client_packet_t
 };
 #pragma pack(pop)
 ```
+###  
+任务循环与帧校验代码：
+```C++
+void image_drv_t::task_loop()
+{
+    uint8_t frame_temp[MAX_FRAME_LEN];
+    while (true)
+    {
+        size_t recv_len = xMessageBufferReceive(_rx_msg_buf, frame_temp, MAX_FRAME_LEN, pdMS_TO_TICKS(100));
+        if (recv_len > 0)
+        {
+            // 双重校验：头部 CRC8 + 全帧 CRC16
+            if (verify_crc8_check_sum(frame_temp, HEADER_SIZE) &&
+                verify_crc16_check_sum(frame_temp, recv_len))
+            {
+                solve_frame(frame_temp, static_cast<uint16_t>(recv_len));
+            }
+        }
+        // 超时检测：500ms 未收到数据即离线
+        if (dwt_drv_t::get_timeline_ms() - _last_update_time > 500.0f)
+            _is_online = false;
+    }
+}
+```
+CRC8：校验帧头部分，快速校验帧头是否损坏,CRC16：校验整个完整数据包，校验全部内容
+**只有两层校验全部通过，** 才会进入solve_frame解析。
 
-**关键数据段容量差异**: 控制器数据负载仅 30 字节，而客户端数据负载高达 300 字节。两者使用独立的 DMA 缓冲区避免互相干扰。
+每成功解析一帧，更新_last_update_time时间戳，置_is_online=true；
+如果 **500ms** 没有收到合法帧，判定上位机离线，is_online()返回 false；
 
-### 3. 订阅机制与 ISR 接收拦截
+### 1.3 内存分配：DMA 堆零拷贝发送
 
-初始化时通过 `init({cmd_id::CUSTOM_CONTROLLER, ...})` 注册白名单。ISR 回调中执行零堆分配的最小化检查：
+控制器数据负载仅 30 字节，而客户端数据负载高达 300 字节。两者使用独立的 DMA 缓冲区避免互相干扰
+```C++
+_tx_controller_pkt = static_cast<tx_controller_packet_t *>(pvPortDmaMalloc(sizeof(tx_controller_packet_t)));
+_tx_client_pkt     = static_cast<tx_client_packet_t *>(pvPortDmaMalloc(sizeof(tx_client_packet_t)));
 
-```c++
+```
+**pvPortDmaMalloc：** 从DMA 专用内存堆分配数据包缓冲区
+发送时直接把该内存地址交给 DMA，**不需要把数据再拷贝一份**到串口发送缓冲区，实现零拷贝发包。
+
+`send_controller_data() / send_client_data()` 负责补全帧头、CRC 并触发 DMA 发送。
+
+`send_controller_data()` 内部执行顺序：写 SOF → 写 data_length → 写 seq → 计算头部 CRC8 → 写 cmd_id → 计算全帧 CRC16 → _uart->write() → 失败时回退 _send_seq。
+
+### 1.4 订阅白名单机制
+```C++
+// pyro_image_drv.h
+uint16_t _subscribed_ids[MAX_SUBSCRIBE_NUM];
+
 // pyro_image_drv.cpp — rx_callback (ISR 上下文)
 bool image_drv_t::rx_callback(const uint8_t *p, uint16_t size, BaseType_t &task_woken) const
 {
@@ -73,56 +143,41 @@ bool image_drv_t::rx_callback(const uint8_t *p, uint16_t size, BaseType_t &task_
     return true;
 }
 ```
+`MAX_SUBSCRIBE_NUM = 4`，最多订阅 4 条指令 ID。
+初始化时通过 `init({cmd_id1,cmd_id2})` 将需要监听的 cmd_id 存入白名单；
+在串口 ISR 回调中收到帧，遍历白名单，如果 cmd_id 不在订阅列表，直接丢弃该帧，不送入消息缓冲区。
 
-### 4. 任务循环与帧校验
-
-`image_task_t` 以 100ms 超时阻塞接收帧数据，通过双重 CRC 级联验证确保数据完整性：
-
-```c++
-void image_drv_t::task_loop()
-{
-    uint8_t frame_temp[MAX_FRAME_LEN];
-    while (true)
-    {
-        size_t recv_len = xMessageBufferReceive(_rx_msg_buf, frame_temp, MAX_FRAME_LEN, pdMS_TO_TICKS(100));
-        if (recv_len > 0)
-        {
-            // 双重校验：头部 CRC8 + 全帧 CRC16
-            if (verify_crc8_check_sum(frame_temp, HEADER_SIZE) &&
-                verify_crc16_check_sum(frame_temp, recv_len))
-            {
-                solve_frame(frame_temp, static_cast<uint16_t>(recv_len));
-            }
-        }
-        // 超时检测：500ms 未收到数据即离线
-        if (dwt_drv_t::get_timeline_ms() - _last_update_time > 500.0f)
-            _is_online = false;
-    }
-}
-```
-
-### 5. 零拷贝发送流水线
-
-应用层直接操作 DMA 缓冲区中的 payload 字段，无需额外拷贝。`send_controller_data()` / `send_client_data()` 负责补全帧头、CRC 并触发 DMA 发送：
-
-```c++
-// 应用层使用示例：
-auto &image = pyro::image_drv_t::get_instance();
-auto &tx_data = image.get_controller_tx_data();  // 获取 DMA 区 payload 引用
-tx_data.data[0] = 0x01;                           // 直接赋值
-tx_data.data[1] = 0x02;
-image.send_controller_data();                     // 补全帧头+CRC → DMA发送
-```
-
-`send_controller_data()` 内部执行顺序：写 SOF → 写 data_length → 写 seq → 计算头部 CRC8 → 写 cmd_id → 计算全帧 CRC16 → `_uart->write()` → 失败时回退 `_send_seq`。
+设计意图：图传链路指令数量很少，最多 4 个就够用；在中断早期过滤无关数据包，减少消息缓冲区压力，降低 CPU 占用。
 
 ## Part 2: 快速上手 (Quick Start)
 
-### 1. 初始化（默认订阅）
-
-若只需使用图传内置的自定义控制器 (0x0302) 和自定义客户端指令 (0x0311)，调用无参 `init()` 即可：
-
+### 2.1 API总览
 ```c++
+// 初始化，传入需要订阅的指令 ID 集合
+void init(std::initializer_list<cmd_id> listening_ids)	
+void init()                 // 默认初始化，订阅内置两条指令
+void start() const          // 启动后台接收解析任务
+[[nodiscard]] bool is_online() const      // 查询图传链路是否在线（500ms 超时）
+
+// 获取控制器通道接收缓冲区指针
+[[nodiscard]] const uint8_t* get_controller_rx_data()
+// 获取客户端指令接收缓冲区指针
+[[nodiscard]] const uint8_t* get_client_rx_cmd_data() const	
+// 获取控制器发送 DMA payload 引用
+tx_controller_payload_t &get_controller_tx_data()	
+// 获取客户端发送 DMA payload 引用
+tx_client_payload_t &get_client_tx_data()
+        
+status_t send_controller_data()      // 打包并 DMA 发送控制器数据包 0x0309
+status_t send_client_data()          // 打包并 DMA 发送客户端数据包 0x0310
+```
+
+### 2.2 初始化
+
+#### 2.2.1 默认订阅
+
+若只需使用图传内置的自定义控制器 (0x0302) 和自定义客户端指令 (0x0311)，调用无参 init() 即可：
+```C++
 #include "pyro_image_drv.h"
 
 void init_image_link()
@@ -137,11 +192,10 @@ void init_image_link()
 }
 ```
 
-### 2. 初始化（自定义订阅列表）
+#### 2.2.2 自定义订阅列表
 
-若需要订阅额外的图传下行命令（如小地图交互等），使用 `init({...})` 显式指定：
-
-```c++
+若需要订阅额外的图传下行命令（如小地图交互等），使用 init({...}) 显式指定：
+```C++
 image.init({
     pyro::cmd_id::CUSTOM_CONTROLLER,
     pyro::cmd_id::TINY_MAP_INTERACT,    // 0x0303 小地图交互
@@ -149,64 +203,70 @@ image.init({
 });
 ```
 
-### 3. 接收数据
+### 2.3 接收数据示例
 
-```c++
-void poll_image_rx()
+```C++
+auto& image = image_drv_t::get_instance();
+
+// 判断图传上位机是否在线
+if(image.is_online())
 {
-    auto &image = pyro::image_drv_t::get_instance();
+    // 获取0x0302(CUSTOM_CONTROLLER)接收数据，最多30字节
+    const uint8_t *p_ctrl = drv.get_controller_rx_data();
 
-    if (image.is_online())
-    {
-        // 读取自定义控制器发来的数据 (0x0302, 有效负载最大 30 字节)
-        const uint8_t *ctrl_data = image.get_controller_rx_data();
-        uint8_t cmd_byte = ctrl_data[0];
-
-        // 读取自定义客户端发来的指令 (0x0311, 有效负载最大 30 字节)
-        const uint8_t *client_cmd = image.get_client_rx_cmd_data();
-    }
+    // 获取0x0311客户端指令接收数据，最多30字节
+    const uint8_t *p_client = drv.get_client_rx_cmd_data();
 }
 ```
 
-### 4. 发送数据
+### 2.4 发送数据示例
+
+重点：`get_controller_tx_data() / get_client_tx_data()`返回DMA 堆内存引用，直接写内存，**不需要自己申请缓冲区。**
 
 ```c++
-void send_to_client()
+// 示例 1：发送控制器数据包 cmd_id=0x0309，payload 最大 30 字节
+void send_to_controller()
 {
-    auto &image = pyro::image_drv_t::get_instance();
+    auto& image = image_drv_t::get_instance();
 
-    // 填充客户端数据 (300 字节可用)
-    auto &tx = image.get_client_tx_data();
-    tx.data[0] = 0xAA;
-    tx.data[1] = 0x55;
-    // ... 填充更多数据 ...
+    // 获取DMA payload引用，直接填充
+    auto& tx_payload = image.get_controller_tx_data();
+    tx_payload.data[0] = 0x01;
+    tx_payload.data[1] = 0x02;
+    // ...填充最多30字节
 
-    // 触发 DMA 发送
-    pyro::status_t ret = image.send_client_data();
-    if (ret != PYRO_OK)
+    // 组装帧头、CRC、DMA发送
+    status_t ret = image.send_controller_data();
+    if(ret != PYRO_OK)
     {
         // 发送失败处理
     }
 }
 
-void send_to_controller()
+// 示例 2：发送客户端数据包 cmd_id=0x0310，payload 最大 300 字节
+void send_to_client()
 {
-    auto &image = pyro::image_drv_t::get_instance();
+    auto& image = image_drv_t::get_instance();
+    auto& tx_client_payload = image.get_client_tx_data();
 
-    // 填充控制器数据 (30 字节可用)
-    auto &tx = image.get_controller_tx_data();
-    tx.data[0] = 0xFF;
+    // 直接向DMA内存写数据，无需memcpy
+    memcpy(tx_client_payload.data, my_buf, sizeof(my_buf));
 
-    pyro::status_t ret = image.send_controller_data();
+    status_t ret = image.send_client_data();
 }
 ```
+### 2.5 注意事项
 
-### 5. 注意事项 (Caveats)
+**1. 宏与外设依赖：** `get_instance()` 接口仅当定义 **IMAGE_UART** 宏（绑定目标 UART 外设）时才可用，使用前必须配置该宏指定图传对应的串口。
 
-1. **宏依赖**: `get_instance()` 仅在定义了 `IMAGE_UART` 宏（指向对应 UART 外设）的条件下可用。需要在 配置。
-2. **DMA 内存安全**: `tx_controller_packet_t` 和 `tx_client_packet_t` 分配自 DMA 内存池（`pvPortDmaMalloc`），生命周期由驱动管理，用户不应释放。
-3. **订阅上限**: 白名单最大容量为 `MAX_SUBSCRIBE_NUM = 4`，超出部分在 `init()` 中被静默忽略。图传链路指令量极低，4 个配额足以覆盖所有使用场景。
-4. **离线检测**: 500ms 内未收到任何已订阅帧即判定为离线 (`_is_online = false`)，上层需轮询 `is_online()` 实现超时逻辑。
-5. **帧完整性**: ISR 回调中当 `size < HEADER_SIZE + 2` 时返回 `true`（表示消费但不入队），这是正常的协议歧义消除——在 DMA 分片传输中可能仅接收到部分帧头字节，需要等待更多数据到达。
+**2. DMA 内存使用约束：** `tx_controller_packet_t、tx_client_packet_t` 由内部通过 pvPortDmaMalloc 从 DMA 内存池分配，缓冲区生命周期由驱动内部管理，用户层**禁止手动调用释放接口。**
+
+**3. 订阅白名单上限：** 订阅白名单最大数量为 `MAX_SUBSCRIBE_NUM = 4`，调用init()传入的指令 ID 若超出该数量，超出项会被静默丢弃，无提示日志；图传链路指令数量少，4 个配额可满足常规业务场景。
+
+**4. 链路离线判定逻辑：** 连续 500ms 未收到任意已订阅的合法帧，内部会置为离线状态 _is_online = false；上层业务需要主动轮询 is_online() 获取链路在线状态，自行完成超时业务处理。
+
+**5. 分片帧处理行为：** 中断接收回调里，若接收长度满足 size < HEADER_SIZE + 2 将返回 true，代表该片段被消费但不送入消息缓冲区；该逻辑用于处理 DMA 分片带来的不完整帧头，等待后续剩余数据完成接收，属于正常行为。
+
+**6. 接收数据无锁保护：** `get_controller_rx_data()、get_client_rx_cmd_data()` 获取的接收缓冲区由图传任务写、业务层读，驱动内部未提供互斥保护；多线程场景读取接收数据时，上层必须自行加锁，避免读到半更新的残缺数据。
 
 ## Q&A

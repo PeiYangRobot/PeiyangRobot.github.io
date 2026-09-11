@@ -78,6 +78,12 @@ PR是Pull requests的简写。交PR类似交作业，交上去之后上游仓库
 4. 上游仓库请填写`PeiYangRobot/PeiyangRobot.github.io`
 :::
 
+::: danger
+安装`node.js`时请将安装提示中的所有额外项目勾选上（或者如果看得懂英文请务必勾选`add to PATH`和`安装nvm`）
+                    
+                                                                            ——卢相泽
+::: 
+
 ### PicGo配置
 
 打开下载好的PicGo，刚安装好的应该是英文，不过大概也能看懂吧 ~~（Lucky除外了，可能是这里难住他了吧）~~ ，点击图床设置，选中`腾讯云COS`
@@ -162,7 +168,3 @@ PR是Pull requests的简写。交PR类似交作业，交上去之后上游仓库
 Lucky没学会🐷，你学会了吗？
 
 <Author name="Pason" />
-
-
-再次测试claude模型能不能用
-

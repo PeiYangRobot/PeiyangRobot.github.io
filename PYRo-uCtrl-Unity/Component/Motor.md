@@ -39,6 +39,26 @@ File<Badge type = "info" text="pyro_dji_motor_drv.h"/><Badge type = "info" text=
 └──────────────────────┴───────────────────────────────────────┘
 ```
 
+#### 控制任务中的调用范式
+
+电机在 `module_base_t` 派生的业务模块中通常遵循“**每周期先反馈、后控制、再下发**”的固定次序：
+
+```cpp
+// 业务模块的周期性 _update_feedback(): 读回所有电机状态
+for (auto *m : 该模块所有电机)
+    m->update_feedback();            // 内部: 查 fresh → 解析 → 刷新成员 / 维护 online
+
+// 状态机/控制: 读取 get_current_* 计算误差 → PID → 得目标扭矩
+
+// 业务模块的发指令: 对所有电机 send_torque
+for (auto *m : 该模块所有电机)
+    m->send_torque(out_torque_of_m); // DJI: 攒齐同帧电机后落总线; DM: 立即发 MIT 帧
+```
+
+**DJI 特别注意**：同一个 `dji_motor_tx_frame`（同总线同 tx_id）上的多台电机，`send_torque()` 必须在**同一循环/同一周期全部被调用**，否则最后一台的调用因帧内存在未更新槽位而不触发发送、且会在其返回值被忽略下“静默不生效”。常见做法是把同一帧的电机放同一模块里依次发指令。
+
+**控制频率与反馈频率匹配**：`update_feedback()` 轮询频率应与电机 CAN 反馈频率（通常 1kHz）相近；反馈是中断写缓冲、任务读，若任务频率过低，fresh 帧会只保留最新一帧。
+
 ### 2. 抽象基类 (`motor_base_t`)
 
 基类封装了所有电机的通用状态与数据访问接口，派生类只需实现协议相关的使能、反馈解析和扭矩发送：
@@ -80,7 +100,29 @@ protected:
 
 **统一的物理量纲**: 所有派生类的 `_current_position` 统一为弧度 (rad)、`_current_rotate` 统一为 rad/s、`_current_torque` 统一为 N·m。上层算法无需关心底层电机的原始编码方式。
 
+**接口说明**
+| 接口                     | 返回类型               | 说明                                             |
+| ------------------------ | ------------------ | ------------------------------------------------ |
+| `enable()`               | `status_t` | 使能电机                           |
+| `disable()`              | `status_t` | 失能电机                                         |
+| `update_feedback()`      | `status_t` | 轮询反馈缓冲并刷新内部数据（必须在控制周期调用） |
+| `send_torque(float)`     | `status_t` | 下发扭矩/电流指令（单位 N·m，映射到具体型号）    |
+| `get_temperature()`      | `int8_t`           | 返回电机温度（℃）                         |
+| `get_current_position()` | `float`            | 返回电机转子端位置（rad）                  |
+| `get_current_rotate()`   | `float`            | 返回电机转子端转速（rad/s）                  |
+| `get_current_torque()`   | `float`            | 返回电机转矩（N·m）                    |
+| `is_enable()`            | `bool`             | 返回电机是否启用                                   |
+| `is_online()`            | `bool`             | 返回电机是否在线                                   |
+
+::: warning
+**注意**：获取电机具体状态的各函数只读取当前基类各状态变量的值并返回，并非实时状态。务必在调用这些函数前调用`update_feedback()`刷新基类中各变量的值。
+:::
+
 ### 3. DJI 电机驱动族 (`dji_motor_drv_t`)
+
+::: tip
+DJI电机并无设计上的使能/失能状态，默认上电即可用。`enable()/disable()` 仅改本地标志 `_enable`，**不发 CAN 电机命令**。电机使能/失能状态由本模块实现，真正的“输出/停转”发生在每次 `send_torque()`：使能时写指令扭矩，失能时强制写 0。
+:::
 
 #### 3.1 TX 帧复用池 — 多电机聚合发送
 
@@ -131,6 +173,11 @@ status_t dji_motor_tx_frame_t::update_value(uint8_t id, int16_t value)
 ```
 
 这意味着：上层对同一帧内的每个电机独立调用 `send_torque()`，但 CAN 报文只在**最后一个电机的扭矩值到达时**才真正发出。每一轮控制循环中，帧内所有电机按顺序填充完毕后触发一次聚合发送。
+
+::: tip
+- 同一 TX 帧（同一总线 + 同一 tx_id）上的电机，必须在**同一控制周期内全部调用一次 `send_torque()`**，最后一台才会真正触发整帧发送；
+- 槽位由 `id % 4` 决定，**同一帧上两个电机若 `id % 4` 相同会注册冲突**（`register_id` 返回 `PYRO_ERROR`）。规划电机编号时需按帧错开槽位。
+:::
 
 #### 3.2 TX 帧池 (`dji_motor_tx_frame_pool_t`)
 
@@ -224,7 +271,34 @@ static constexpr float reciprocal_reduction_ratio = 0.0520746310219994f;
 
 DM 电机采用 MIT 控制模式协议，与 DJI 协议有显著差异：不通过帧池聚合，每个电机独立发送 8 字节 MIT 控制帧。
 
-#### 4.1 MIT 控制帧结构
+#### 4.1 构造与 ID 约定
+
+```cpp
+dm_motor_drv_t(uint32_t can_id, uint32_t master_id, bsp_can::which_can which);
+// 例: new dm_motor_drv_t(0x01, 0x00, bsp_can::can2);
+```
+
+- `can_id`：从主机发出的控制帧 ID（对 DM 电机即 CAN ID）；
+- `master_id`：DM 电机回给主机的**主机反馈 ID**，构造时用它创建 `can_msg_buffer_t` 并 `register_rx_msg`；
+- `which`：所在总线。
+
+即“主机 → 电机”用 `can_id` 发送，“电机 → 主机”用 `master_id` 接收。
+
+#### 4.2 MIT 控制帧结构
+
+DM 电机有若干“管理模式”字节命令，驱动以管理帧实现：
+
+| 操作               | 数据帧（8 字节）          | 说明                     |
+| ------------------ | ------------------------- | ------------------------ |
+| 使能 enable()      | `FF FF FF FF FF FF FF FC` | 发送后置 `_enable=true`  |
+| 失能 disable()     | `FF FF FF FF FF FF FF FD` | 发送后置 `_enable=false` |
+| 清错 clear_error() | `FF FF FF FF FF FF FF FB` | 清电机错误               |
+
+`enable()/disable()` 发送失败返回 `PYRO_ERROR` 且不更新 `_enable`。
+
+::: tip
+DM 电机“必须先清错再使能”，否则 `clear_error()` 会复位移除刚置的使能状态。
+:::
 
 DM 电机的控制帧将位置、速度、KP、KD、扭矩五项参数封装在同一 CAN 报文中：
 
@@ -256,7 +330,7 @@ static float uint_to_float(int x_int, float x_min, float x_max, int bits)
 
 编码使用区间映射方式：`float_to_uint` 将连续值映射到 `[0, 2^bits-1]` 的整数空间，`uint_to_float` 反向还原。与 DJI 的固定比例编码不同，DM 的编码范围通过 `set_position_range()` / `set_torque_range()` 等方法在运行时可调。
 
-#### 4.2 错误码管理
+#### 4.3 错误码管理
 
 DM 电机在反馈报文的 `data[0]` 高 4 位携带错误码：
 
@@ -289,7 +363,7 @@ status_t dm_motor_drv_t::update_feedback()
 }
 ```
 
-#### 4.3 使能/失能/清错
+#### 4.4 使能/失能/清错
 
 DM 电机的使能/失能/清错通过写入特定控制字实现（无需帧池）：
 
@@ -309,7 +383,17 @@ status_t dm_motor_drv_t::enable()
 // 清错: 末字节 0xFB
 ```
 
-------
+#### 4.5 量程 / 运行参数配置
+
+DM 的 MIT 帧量化依赖**物理量程**，使用前须设置：
+
+```cpp
+void set_position_range(float min, float max);   // 位置量程, 例 (-π, π)
+void set_rotate_range(float min, float max);     // 速度量程, 例 (-20, 20) rad/s
+void set_torque_range(float min, float max);     // 扭矩量程, 例 (-10, 10) N·m
+void set_runtime_kp(float kp);                   // 运行 Kp, 合法 0..500
+void set_runtime_kd(float kd);                   // 运行 Kd, 合法 0..5
+```
 
 ## Part 2: 快速上手 (Quick Start)
 
@@ -450,5 +534,24 @@ void motor_health_check()
 5. **GM6020 ID 限制**: GM6020 仅支持 id1~id7，id8 为无效值。尝试以 id8 构造 `dji_gm_6020_motor_drv_t` 将导致 `_init_status = PYRO_ERROR`。
 6. **反馈更新频率**: `update_feedback()` 应至少以 1kHz 频率调用。CAN 消息缓冲区的 `is_fresh()` 是单次消费标记——若两帧反馈之间上层只调用了一次 `update_feedback()`，将丢失一帧数据。建议将电机控制循环置于 FreeRTOS 任务中以 `vTaskDelay(1)` 严格定时。
 7. **线程安全**: 电机实例本身不提供内置互斥锁。若多个任务同时访问同一电机实例（例如一个任务读反馈、另一个任务发扭矩），需在上层加锁保护。
+
+## Part 3: 常见错误 (Common Mistakes)
+
+### 1. GM6020控制模式
+DJI GM6020有**电压控制**和**电流控制**两种模式，目前模块里只支持**电流控制**。如果你不小心接手了一台老车，而上一个负责的人又刚好充满个性🤣，没使用库来写代码，可能会触发~~前人的馈赠~~奇怪的错误，即**电机反馈正常但一直不上力**😨，这时不要急着去怀疑是否是电机的问题。这很有可能是因为6020被设置为了电压控制模式，而你发送了电流模式的控制帧，自然无法驱动电机。
+
+要解决这个问题，需要去**RM官网**下载**RoboMaster Assistant**软件调整电机模式（或者在6020的软件支持页面下载）。
+
+下载好软件后，找一个**USB转串口模块**然后以**正确线序**连接GM6020的**PWM控制接口**，然后使电机上电（注意此时不要给电机**任何**控制信号，防止电机突然起转失控），打开RM Assistant，然后会看到类似如下页面。
+
+![Motor-2026-09-10-2026-09-10-20-43-57](https://pyro-pic-repository-1351801423.cos.ap-beijing.myqcloud.com/PYRo-uCtrl-Unity/Component/Motor-2026-09-10-2026-09-10-20-43-57.png)
+
+若电机是**电压控制模式**，将会看到最下面的电流环是关闭状态，将之设为**开启**即可。然后点击“**设置**”按钮，将配置刷入电机，电机将被设为**电流控制模式**。
+
+::: tip
+若没有看到**电流环**这一设置选项，大概率是因为电机**固件版本**太旧，点击“**固件升级**”，然后按软件提示刷入最新固件即可进行操作。
+:::
+
+然后断开连接。恭喜你，又解决了一个前辈留下的小巧思。😂
 
 ## Q&A

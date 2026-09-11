@@ -1,322 +1,280 @@
-Version<Badge type ="tip" text="1.0.0"/>  
-File<Badge type = "info" text="pyro_referee.h"/><Badge type = "info" text="pyro_referee.cpp"/><Badge type = "info" text="fifo.h"/><Badge type = "info" text="fifo.cpp"/><Badge type = "info" text="pyro_ui_drv.h"/><Badge type = "info" text="pyro_ui_drv.cpp"/><Badge type = "info" text="protocol.h"/>
+Version<Badge type="tip" text="1.0.0"/>  
+File<Badge type="info" text="pyro_referee.h"/><Badge type="info" text="pyro_referee.cpp"/><Badge type="info" text="pyro_ui_drv.h"/><Badge type="info" text="pyro_ui_drv.cpp"/>
 
 # PYRo Referee Driver
 
-**基于 FreeRTOS 的 RoboMaster 裁判系统全功能驱动（含 UI 子模块）**
+RoboMaster 裁判系统驱动，实现裁判系统与单片机双向通信。接收时通过 FIFO 缓冲 + 状态机解包 + 白名单订阅实现按需数据提取；发送时采用双缓冲 + 信号量流水线实现 CPU 组包与 DMA 发送并行。配套 UI 驱动提供操作手端图形绘制功能。
 
-该 `pyro_referee_drv` 模块实现了与 RoboMaster 裁判系统主控模块 (Referee System) 的双向通信。接收侧：通过 FIFO 缓冲 + 状态机解帧 + 白名单订阅实现按需数据提取；发送侧：采用双缓冲 (Ping-Pong) + 二值信号量流水线实现 CPU 组包与 DMA 发送并行化，最大化带宽利用率。配套 `ui_drv_t` 子模块提供图形化/字符串学生端 UI 绘制能力。
-
-> 嵌入式开发前置知识：了解 RoboMaster 裁判系统通信协议 (0xA5 帧头格式)、FreeRTOS 互斥锁与二值信号量、STM32 UART DMA 发送、FIFO 环形缓冲
-
-## Part 1: 代码全解 (Code Deep Dive)
-
-### 1. 整体架构
+## 核心架构
 
 ```
-┌─────────────────────────────────────────────────┐
-│                 Application Layer               │
-│     (get_data() / send_packet() / UI draw)      │
-├──────────────────┬──────────────────────────────┤
-│  referee_drv_t   │       ui_drv_t               │
-│  • 解帧/组帧      │       • 图层管理             │
-│  • 白名单过滤     │       • 几何/文本绘制         │
-│  • 双缓冲DMA发送   │       • 批量合并发送         │
-├──────────────────┴──────────────────────────────┤
-│         fifo_s_t (ISR → Task 字节流缓冲)         │
-├─────────────────────────────────────────────────┤
-│               pyro_uart_drv_t                   │
-│        (UART DMA 接收 + 中断回调)                │
-└─────────────────────────────────────────────────┘
+应用层 (get_data / send_packet / UI 绘制)
+    ├─ referee_drv_t (解包/组包/白名单/双缓冲发送)
+    ├─ ui_drv_t (图层管理/几何绘制/批量发送)
+    └─ fifo_s_t
 ```
 
-### 2. 协议定义 (`protocol.h`)
+## 快速使用
 
-`protocol.h` 提供了完整的 RoboMaster 裁判系统协议数据结构（对应官方规范 V1.x），核心元素：
+### 初始化
 
-**帧头结构** — 5 字节固定格式：
-
-```c++
-struct frame_header_t {
-    uint8_t sof;           // 0xA5
-    uint16_t data_length;  // 数据段长度
-    uint8_t seq;           // 包序号
-    uint8_t crc8;          // 帧头 CRC8
-};
-```
-
-**命令码枚举** — 覆盖比赛状态、机器人状态、功率热量、交互数据等全部命令：
-
-```c++
-enum class cmd_id : uint16_t
-{
-    GAME_STATE           = 0x0001,  // 比赛阶段与剩余时间
-    ROBOT_STATE          = 0x0201,  // 机器人血量/枪管热量/功率限制
-    POWER_HEAT_DATA      = 0x0202,  // 底盘功率/缓冲能量/枪管热量
-    SHOOT_DATA           = 0x0207,  // 发射信息(弹速/射速/弹丸类型)
-    STUDENT_INTERACTIVE  = 0x0301,  // 学生间/机器人间数据交互
-    // ... 共 20+ 命令码
-};
-```
-
-**聚合数据结构** — `referee_data_t` 将所有下行子结构聚合为一个整体，方便使用者通过一次引用访问全部字段：
-
-```c++
-struct referee_data_t {
-    game_status_t game_status;
-    robot_status_t robot_status;
-    power_heat_data_t power_heat;
-    robot_pos_t robot_pos;
-    shoot_data_t shoot;
-    // ... 共 20+ 字段
-};
-```
-
-### 3. FIFO 环形缓冲 (`fifo_s_t`)
-
-中断服务例程 (ISR) 不能执行耗时操作，因此裁判系统使用单字节 FIFO (Single Byte Mode) 作为 ISR 与任务之间的字节流缓冲：
-
-```c++
-// fifo.h — 数据结构
-typedef struct {
-    char *p_start_addr;  // 内存池起始地址
-    char *p_end_addr;    // 内存池结束地址
-    int free_num;        // 剩余容量
-    int used_num;        // 已用数量
-    char *p_read_addr;   // 读指针
-    char *p_write_addr;  // 写指针
-} fifo_s_t;
-```
-
-- **环形回绕**: 当读写指针到达物理末尾时自动回绕到起始地址，实现循环利用
-- **ISR 安全**: `fifo_s_puts()` / `fifo_s_get()` 使用 `__disable_irq()` 保护临界区，中断与任务间并发安全
-- **批量操作**: `fifo_s_puts()` 和 `fifo_s_gets()` 支持整块数据读写，减少函数调用次数
-
-```c++
-// ISR 中快速写入
-bool referee_drv_t::rx_callback(uint8_t *p, uint16_t size, BaseType_t task_woken)
-{
-    fifo_s_puts(&_fifo, reinterpret_cast<char *>(p), size);
-    return true;
-}
-```
-
-### 4. 状态机解帧
-
-解帧逻辑不依赖帧间空闲检测，而是用纯状态机逐字节驱动——这是处理 DMA 分片接收的标准方式：
-
-```c++
-enum class unpack_step {
-    HEADER_SOF  = 0,  // 搜索 SOF 0xA5
-    LENGTH_LOW,       // 接收 data_length 低字节
-    LENGTH_HIGH,      // 接收 data_length 高字节，超长则复位
-    FRAME_SEQ,        // 接收包序号
-    HEADER_CRC8,      // 接收帧头 CRC8，校验失败复位
-    DATA_CRC16        // 接收数据段 + CRC16，校验成功调用 solve_data()
-};
-```
-
-关键安全设计：
-
-- `LENGTH_HIGH` → 若 `len >= FRAME_MAX_SIZE` 则立即复位，防止无效长度导致缓冲区溢出
-- `HEADER_CRC8` → CRC8 验证失败即丢弃该帧，有效防止因单字节错误导致的整帧数据错位
-- 每完整收到一帧后自动回到 `HEADER_SOF`，不依赖帧间间隙
-
-### 5. 白名单订阅策略
-
-`referee_drv_t` 使用 `std::bitset<1024>` 维护订阅命令集——这是因为裁判系统协议拥有约 20 种命令码，ID 范围跨越 0x0001~0x0308，bitset 的 O(1) 查找相比线性搜索更适合此场景。
-
-```c++
-// 仅订阅指定命令
-referee.init({cmd_id::ROBOT_STATE, cmd_id::POWER_HEAT_DATA, cmd_id::SHOOT_DATA});
-
-// 或全量订阅（debug/监控场景）
-referee.init();  // _enabled_ids.set() 全部拉高
-```
-
-### 6. 双缓冲 (Ping-Pong) DMA 发送流水线
-
-模块预先分配 2 块 DMA 安全缓冲区 (`_tx_buffers[2]`)，配合二值信号量实现"CPU 组包"与"DMA 发送"的并行流水：
-
-```text
-           时间轴 →
-   Buf[0]: [CPU 组包────] [DMA 发送────────────────] [CPU 组包────] ...
-   Buf[1]:               [CPU 组包────] [DMA 发送──────────────] ...
-```
-
-```c++
-bool referee_drv_t::send_packet(cmd_id cmd_id_val, const void *data, uint16_t len)
-{
-    // 1. 互斥锁：防止多线程同时组包
-    const scoped_mutex_t lock(_tx_mutex, pdMS_TO_TICKS(100));
-    if (!lock.is_locked()) return false;
-
-    // 2. 获取当前空闲缓冲区（上一包可能正在 DMA 发送中）
-    uint8_t *current_tx_buf = _tx_buffers[_tx_buffer_idx];
-    _tx_buffer_idx = (_tx_buffer_idx + 1) % TX_BUFFER_NUM;
-
-    // 3. CPU 组装数据帧（与上一包的 DMA 发送并行！）
-    p_header->sof = HEADER_SOF;
-    p_header->data_length = len;
-    // ... 填充 header / cmd_id / data / crc16 ...
-
-    // 4. 阻塞等待上一包 DMA 发送完成（二值信号量）
-    if (xSemaphoreTake(_tx_cplt_sem, pdMS_TO_TICKS(50)) != pdTRUE)
-        return false;
-
-    // 5. 启动当前包的 DMA 发送（非阻塞）
-    _uart->write(current_tx_buf, frame_total_len);
-    return true;
-}
-```
-
-**发送完成中断** (`tx_cplt_callback`) 中调用 `xSemaphoreGiveFromISR()` 归还信号量，唤醒可能正在等待的下一帧发送。
-
-### 7. UI 子模块 (`ui_drv_t`)
-
-`ui_drv_t` 是对裁判系统学生端 UI 协议的封装，通过 `referee_drv_t` 的 `send_ui_interaction()` 通道发送绘制数据。
-
-**支持的图形类型**:
-
-| 枚举值    | 图形       | 数据负载                               |
-| --------- | ---------- | -------------------------------------- |
-| `LINE`    | 直线       | 2 参数: end_x, end_y                   |
-| `RECT`    | 矩形       | 2 参数: end_x, end_y                   |
-| `CIRCLE`  | 圆圈       | 1 参数: radius                         |
-| `ELLIPSE` | 椭圆       | 2 参数: rx, ry                         |
-| `ARC`     | 圆弧       | 4 参数: start_angle, end_angle, rx, ry |
-| `FLOAT`   | 浮点数显示 | 值编码为 32-bit 拆分成 3 个 bitfield   |
-| `INT`     | 整数显示   | 同上                                   |
-| `STRING`  | 字符串显示 | 最多 30 字符                           |
-
-**批量合并优化**: 裁判系统 UI 协议允许单帧发送多个图形（1/2/5/7 个/帧）。`ui_drv_t` 内部使用 `std::vector<ui_figure_data_t>` 缓存待发送图形，当累积到 7 个时自动打包发送，减少通信次数。最后通过 `flush()` 清空剩余图形。
-
-```c++
-// 流式链式调用 + 自动批量发
-ui.draw_line("l1", ui_operate::ADD, 0, ui_color::GREEN, 2, 100,200, 300,200)
-  .draw_circle("c1", ui_operate::ADD, 0, ui_color::RED, 2, 500,400, 50)
-  .draw_float("f1", ui_operate::ADD, 1, ui_color::CYAN, 16, 3, 800,600, 3.1415f);
-  // ... 累积到 7 个自动发送 ...
-
-ui.flush();  // 发送剩余图形，清空缓存
-```
-
-## Part 2: 快速上手 (Quick Start)
-
-### 1. 初始化（订阅模式）
+**位置**: `pyro_init_thread.cpp` 或主初始化文件
 
 ```c++
 #include "pyro_referee.h"
-#include "pyro_ui_drv.h"
 
-void init_referee()
+// 在 FreeRTOS 初始化线程中配置 UART 并启动裁判系统驱动
+extern "C"
 {
-    auto *referee = pyro::referee_drv_t::get_instance();
-
-    // 显式订阅需要的命令码，减少不必要的数据拷贝
-    referee->init({
-        pyro::cmd_id::GAME_STATE,
-        pyro::cmd_id::ROBOT_STATE,
-        pyro::cmd_id::POWER_HEAT_DATA,
-        pyro::cmd_id::SHOOT_DATA,
-        pyro::cmd_id::STUDENT_INTERACTIVE,
-    });
-}
-```
-
-### 2. 读取裁判系统数据
-
-```c++
-void monitor_referee_data()
-{
-    auto *referee = pyro::referee_drv_t::get_instance();
-
-    while (true)
+    void pyro_init_thread(void *argument)
     {
-        if (referee->is_online())
-        {
-            // 获取只读引用 (无需拷贝结构体)
-            const auto &data = referee->get_data();
+        // ... 其他初始化 ...
+        
+#ifdef REFEREE_UART
+        REFEREE_UART.reset(115200, UART_WORDLENGTH_8B, UART_STOPBITS_1,
+                           UART_PARITY_NONE);
+        REFEREE_UART.enable_rx_dma();
+        referee_drv_t::get_instance()->init();  // 全量订阅所有命令
+#endif
 
-            // 比赛信息
-            uint16_t remain = data.game_status.stage_remain_time;
-
-            // 机器人状态
-            uint16_t current_hp = data.robot_status.current_hp;
-            uint16_t chassis_power_limit = data.robot_status.chassis_power_limit;
-
-            // 功率热量
-            uint16_t buffer_energy = data.power_heat.buffer_energy;
-            uint16_t barrel_heat  = data.power_heat.shooter_17mm_barrel_heat;
-
-            // 自动同步的 ID
-            uint16_t my_robot_id = referee->get_robot_id();
-            uint16_t my_client_id = referee->get_client_id();
-        }
-        else
-        {
-            // 超时 2s 未收到数据，裁判系统离线
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(10));  // 100Hz 轮询
+        // 或选择性订阅指定命令（减少数据处理开销）
+        // referee_drv_t::get_instance()->init({
+        //     pyro::cmd_id::ROBOT_STATE,
+        //     pyro::cmd_id::POWER_HEAT_DATA,
+        //     pyro::cmd_id::SHOOT_DATA,
+        // });
+        
+        vTaskDelete(nullptr);
     }
 }
 ```
 
-### 3. 发送机器人间交互数据
+### 读取数据
+
+**位置**: 板间通信、底盘控制等业务逻辑文件（如 `pyro_board_com.cpp`）
 
 ```c++
-void send_interaction_to_client()
-{
-    auto *referee = pyro::referee_drv_t::get_instance();
+#include "pyro_referee.h"
 
-    // 发送给本队哨兵 (假设 ID=107)
-    uint8_t cmd_data[4] = {0x01, 0x00, 0x00, 0x00};
-    referee->send_robot_interaction(
-        107,                              // 接收方 ID
-        0x0120,                           // 子命令码 (哨兵指令)
-        cmd_data, sizeof(cmd_data));
+auto *referee = referee_drv_t::get_instance();
+
+if (referee->is_online())  // 2s 超时检测
+{
+    const auto &ref_data = referee->get_data();
+    
+    // 机器人状态
+    uint16_t current_hp = ref_data.robot_status.current_hp;
+    uint16_t heat_limit = ref_data.robot_status.shooter_barrel_heat_limit;
+    uint8_t gimbal_output = ref_data.robot_status.power_management_gimbal_output;
+    
+    // 功率热量数据
+    uint16_t buffer = ref_data.power_heat.buffer_energy;
+    uint16_t heat = ref_data.power_heat.shooter_42mm_barrel_heat;
+    
+    // 发射数据
+    float speed = ref_data.shoot.initial_speed;
+    uint16_t shoot_count = ref_data.shoot_launching_count;  // 驱动维护的发射计数（非协议字段）
+    
+    // 位置信息
+    float x = ref_data.robot_pos.x;
+    float y = ref_data.robot_pos.y;
+    
+    // 机器人 ID（自动从 ROBOT_STATE 提取）
+    uint16_t robot_id = referee->get_robot_id();
+    uint16_t client_id = referee->get_client_id();  // robot_id + 0x0100
+    uint8_t robot_color = robot_id >= 100 ? 1 : 0;  // 0=红方, 1=蓝方
 }
 ```
 
-### 4. 使用 UI 驱动绘制学生端界面
+### 发送交互数据
+
+**位置**: 机器人间通信模块（如哨兵通信、雷达通信）
+
+```c++
+#include "pyro_referee.h"
+
+auto *referee = referee_drv_t::get_instance();
+
+// 机器人间通信（自动校验同队）
+uint8_t cmd_data[4] = {0x01, 0x00, 0x00, 0x00};
+referee->send_robot_interaction(107, 0x0120, cmd_data, sizeof(cmd_data));
+
+// 自定义信息到客户端（图传链路 0x0308）
+referee->send_custom_info("Hello Client");
+```
+
+### UI 绘制
+
+**位置**: UI 通信模块（如 `Communication/Chassis_board/pyro_ui_com.cpp`）
 
 ```c++
 #include "pyro_ui_drv.h"
+#include "pyro_referee.h"
 
-void render_ui()
+// UI 初始化（需等待裁判系统在线且 robot_id 有效）
+static referee_drv_t *referee_ptr = referee_drv_t::get_instance();
+static ui_drv_t *ui_ptr = nullptr;
+
+// 等待裁判系统在线
+while (!referee_ptr->is_online() || referee_ptr->get_robot_id() == 0)
 {
-    auto *referee = pyro::referee_drv_t::get_instance();
-    static pyro::ui_drv_t ui(referee);
+    vTaskDelay(pdMS_TO_TICKS(500));
+}
 
-    // 操作码枚举
-    using namespace pyro;
+// 创建 UI 驱动（动态分配）
+ui_ptr = new ui_drv_t(referee_ptr);
 
-    // 清除图层 0
-    ui.clear_layer(0);
+// 清除操作
+ui_ptr->clear_layer(0);   // 清除图层 0
+ui_ptr->clear_all();      // 清除所有图层
 
-    // 绘制十字准心
-    ui.draw_line("ln1", ui_operate::ADD, 0, ui_color::GREEN, 2, 480, 200, 480, 600)
-      .draw_line("ln2", ui_operate::ADD, 0, ui_color::GREEN, 2, 320, 400, 640, 400);
+// 几何图形（链式调用，满 7 个自动发送）
+ui_ptr->draw_line("ln1", ui_operate::ADD, 0, ui_color::GREEN, 2, 100,200, 300,200)
+      .draw_circle("c1", ui_operate::ADD, 0, ui_color::RED, 2, 500,400, 50)
+      .draw_rect("r1", ui_operate::ADD, 0, ui_color::YELLOW, 3, 100,100, 200,150);
 
-    // 绘制血量数字
-    ui.draw_float("hp1", ui_operate::ADD, 1, ui_color::RED, 16, 3, 800, 100, 350.5f);
+// 数值显示
+ui_ptr->draw_float("hp", ui_operate::ADD, 1, ui_color::CYAN, 20, 2, 800,100, 350.5f)
+      .draw_int("ammo", ui_operate::ADD, 1, ui_color::WHITE, 16, 2, 800,150, 120);
 
-    // 绘制字符串
-    ui.draw_string("tx1", ui_operate::ADD, 1, ui_color::CYAN, 16, 3, 800, 200, "PYRo Online");
+// 字符串（单独发送，最多 30 字符）
+ui_ptr->draw_string("txt", ui_operate::ADD, 1, ui_color::GREEN, 18, 2, 800,200, "READY");
 
-    // 确保所有未发送的图形被发出
-    ui.flush();
+ui_ptr->flush();  // 发送剩余图形
+```
+
+### UI 操作枚举
+
+| 操作 | 枚举 | 说明 |
+|------|------|------|
+| 添加 | `ui_operate::ADD` | 新增图形 |
+| 修改 | `ui_operate::MODIFY` | 更新已存在图形 |
+| 删除 | `ui_operate::DELETE` | 删除指定图形 |
+
+| 图形 | 枚举 | 参数 |
+|------|------|------|
+| 直线 | `ui_figure::LINE` | start_x, start_y, end_x, end_y |
+| 矩形 | `ui_figure::RECT` | start_x, start_y, end_x, end_y |
+| 圆形 | `ui_figure::CIRCLE` | center_x, center_y, radius |
+| 椭圆 | `ui_figure::ELLIPSE` | center_x, center_y, rx, ry |
+| 圆弧 | `ui_figure::ARC` | center_x, center_y, start_angle, end_angle, rx, ry |
+
+| 颜色 | 枚举 |
+|------|------|
+| 队友色 | `ui_color::ALLY` |
+| 黄色 | `ui_color::YELLOW` |
+| 绿色 | `ui_color::GREEN` |
+| 橙色 | `ui_color::ORANGE` |
+| 紫红 | `ui_color::MAGENTA` |
+| 粉色 | `ui_color::PINK` |
+| 青色 | `ui_color::CYAN` |
+| 黑色 | `ui_color::BLACK` |
+| 白色 | `ui_color::WHITE` |
+
+## 技术细节
+
+### 协议帧格式
+
+```
+[SOF:1][Len:2][Seq:1][CRC8:1][CMD_ID:2][Data:N][CRC16:2]
+```
+
+- SOF 固定 `0xA5`
+- 状态机逐字节解析，CRC8/CRC16 双重校验
+- 最大帧长 `FRAME_MAX_SIZE = 256` 字节
+
+### 双缓冲发送机制
+
+```
+Buf[0]: [CPU 组包] → [DMA 发送] → [空闲]
+Buf[1]:              [CPU 组包] → [DMA 发送]
+```
+
+- 2 块 DMA 缓冲 Ping-Pong 切换
+- 互斥锁保护组包，信号量同步 DMA 完成
+- 50ms 超时保护，适配 115200 波特率
+
+### FIFO 环形缓冲
+
+- 1024 字节容量，中断安全（`__disable_irq`）
+- ISR 快速写入，Task 轮询读取
+- 支持批量操作减少函数调用
+
+## 实战技巧
+
+### 发射事件检测
+
+**位置**: 底盘板通信或发射控制模块（如 `pyro_board_com.cpp`）
+
+使用 `shoot_launching_count` 计数器检测新发射事件：
+
+```c++
+#include "pyro_referee.h"
+
+static uint16_t last_launching_num = 0;
+auto *referee = referee_drv_t::get_instance();
+
+const auto &ref_data = referee->get_data();
+if (ref_data.shoot_launching_count != last_launching_num)
+{
+    // 检测到新发射
+    float shoot_speed = ref_data.shoot.initial_speed;
+    // 处理发射事件...
+    last_launching_num = ref_data.shoot_launching_count;
 }
 ```
 
-### 5. 注意事项 (Caveats)
+**说明**: `shoot_launching_count` 不是裁判系统协议字段，而是驱动内部维护的计数器。每次收到裁判系统的 `SHOOT_DATA (0x0207)` 消息时，驱动会自动执行 `shoot_launching_count++`。应用层通过对比计数器变化来检测新的发射事件，避免重复处理同一条消息。
 
-1. **宏依赖**: `get_instance()` 仅在定义了 `REFEREE_UART` 宏的条件下可用。需要在 `pyro_core_config.h` 中配置。
-2. **Robot ID 自动同步**: `robot_status_t` 包中携带的 `robot_id` 会被自动提取到 `_robot_id` 成员变量。发送交互数据前必须确保已成功接收到至少一次 `ROBOT_STATE` 包。
-3. **同队校验**: `send_robot_interaction()` 发送前会校验发送方与接收方的队伍颜色一致——红方 Robot ID < 100，蓝方 Robot ID ≥ 100。跨队交互将被拒绝。
-4. **UI 发送速率**: `send_ui_interaction()` 内部每次调用后 `vTaskDelay(40ms)`，以满足裁判系统 UI 更新限速要求。连续绘制大量 UI 元素时需注意累积延迟。
-5. **FIFO 溢出**: ISR 回调中 `fifo_s_puts()` 以最大容量进行截断写入（`len = min(len, free_num)`），高频数据下可能溢出。当前配置 `FIFO_BUF_LEN = 1024` 字节在 100Hz 轮询下足够安全。
-6. **双缓冲限制**: `TX_BUFFER_NUM = 2`。若上层任务以超过 DMA 发送速率（~1MB/s @ 115200 波特率）的频率连续调用 `send_packet()`，`xSemaphoreTake(50ms)` 将超时返回失败。上层应自行控制发送频率或处理超时重试。
+### UI 脏检查优化
 
-## Q&A
+**位置**: UI 绘制模块（如 `pyro_ui_com.cpp`）
+
+避免不必要的 UI 更新，使用阈值检测变化：
+
+```c++
+#include <cmath>
+
+static float last_yaw = 0.0f;
+constexpr float threshold = 0.001f;
+
+if (std::fabs(current_yaw - last_yaw) > threshold)
+{
+    ui_ptr->draw_float("yaw", ui_operate::MODIFY, 1, ui_color::GREEN, 
+                       20, 2, 800, 100, current_yaw);
+    last_yaw = current_yaw;
+}
+```
+
+## 文件组织建议
+
+参考 Hero 项目的文件结构：
+
+```
+Robot/Hero/
+├── pyro_init_thread.cpp              # 裁判系统初始化
+├── Communication/
+│   ├── Chassis_board/
+│   │   ├── pyro_board_com.cpp        # 裁判数据读取与转发
+│   │   └── pyro_ui_com.cpp           # UI 绘制与更新
+│   └── Gimbal_board/
+│       └── pyro_custom_com.cpp       # 自定义数据透传
+└── Application/                       # 其他业务逻辑模块
+```
+
+**头文件引用**：
+```c++
+#include "pyro_referee.h"    // 裁判系统驱动
+#include "pyro_ui_drv.h"     // UI 驱动（需要时）
+```
+
+## 注意事项
+
+1. **宏依赖**: `get_instance()` 需在 `pyro_core_config.h` 定义 `REFEREE_UART`
+2. **初始化顺序**: 先配置 UART 参数并启用 DMA，再调用 `init()`
+3. **Robot ID**: 自动从首个 `ROBOT_STATE` 包提取，UI 初始化前需等待在线且 ID 有效
+4. **队伍校验**: 红方 ID < 100，蓝方 ID ≥ 100，`send_robot_interaction()` 拒绝跨队通信
+5. **UI 限速**: 每次 UI 发送后延迟 40ms，大量绘制注意累积延迟
+6. **发送频率**: 双缓冲满载时 `send_packet()` 超时 50ms，上层需控制频率或处理重试
+
+<Author name="Pason" />

@@ -1,4 +1,4 @@
-name: AI Code Review (GPT-5.6-Luna)
+name: AI Code Review (Claude Sonnet 4.6)
 
 on:
   pull_request_target:        
@@ -32,10 +32,10 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r trusted/.github/scripts/requirements.txt
 
-      - name: Analyze diff with GPT
+      - name: Analyze diff with Claude
         id: analyze
         env:
-          GPT_API_KEY: ${{ secrets.GPT_API_KEY }}
+          CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
         run: |
           # 使用我们信任的脚本（来自目标分支）
           python trusted/.github/scripts/ai_review.py pr.diff > review_output.md
