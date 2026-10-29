@@ -63,6 +63,7 @@ export default defineConfig({
               { text: 'RC', link: '/PYRo-uCtrl-Unity/Component/RC' },
               { text: 'Referee', link: '/PYRo-uCtrl-Unity/Component/Referee' },
               { text: 'Supercap', link: '/PYRo-uCtrl-Unity/Component/Supercap' },
+              { text: 'Warning', link: '/PYRo-uCtrl-Unity/Component/Warning' },
             ] },
             { text: 'Core', collapsed: true, items: [
               { text: '简介', link: '/PYRo-uCtrl-Unity/Core/intro' },
