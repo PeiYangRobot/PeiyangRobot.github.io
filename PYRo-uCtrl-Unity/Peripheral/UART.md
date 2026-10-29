@@ -102,7 +102,7 @@ pyro::uart_drv_t &uart1 = pyro::bsp_uart::get_uart1();
 #include "pyro_core_config.h"
 // 获取 UART1 的驱动单例引用
 PYRO_UART1; // 等价于 pyro::bsp_uart::get_uart1();
-PYRO_UART2.write(...); // 直接使用实例调用方法
+PYRO_UART1.write(...); // 直接使用实例调用方法
 
 ```
 
@@ -149,6 +149,8 @@ uart1.write(tx_buf, sizeof(tx_buf));
 // 第三个参数为超时时间 (ms)
 uart1.write(tx_buf, sizeof(tx_buf), 100);
 ```
+> **Tip**：直接声明的缓冲区无法被DMA访问,需要用heap,例如下述方法:
+__attribute__((section(".dma_heap"))) static uint8_t s_rx_buf[sizeof(DATA_SIZE)];
 
 ### 4. 资源释放
 
@@ -159,4 +161,59 @@ uart1.write(tx_buf, sizeof(tx_buf), 100);
 uart1.remove_rx_event_callback(reinterpret_cast<uint32_t>(this));
 ```
 
+### 5. 运行时重配置 (Runtime Reconfiguration)
+
+STM32H7 的 UART 支持在运行期间动态调整波特率、数据帧格式，以及引脚映射与电平极性等高级特性。本节涉及的三个接口遵循同一套内部流程：先停止接收 DMA，再修改配置，随后 `HAL_UART_DeInit → HAL_UART_Init` 使硬件寄存器生效。
+
+> **Warning**：三个接口在重新初始化期间外设会短暂停止收发，调用前请确保当前无关键帧正在传输；若上层仍需要接收，必须在调用后显式执行 `enable_rx_dma()`。
+
+#### 2.1 波特率与帧格式重配 `reset()`
+
+在不销毁实例的前提下，重新配置串口的波特率、字长、停止位与校验位。
+
+```c++
+status_t reset(uint32_t BaudRate, uint32_t WordLength,
+               uint32_t StopBits, uint32_t Parity);
+```
+
+典型用途：动态切换通信参数，例如从调试用的 115200 切换到高速链路的 921600。
+
+```c++
+// 将 UART1 切换到 921600 8N1
+uart1.reset(921600, UART_WORDLENGTH_8B, UART_STOPBITS_1, UART_PARITY_NONE);
+// 配置变更后，若需继续接收，请手动重启 DMA
+uart1.enable_rx_dma();
+```
+#### 2.2 引脚交换 `set_pin_swap()`
+
+运行时交换 TX 与 RX 的引脚映射，对应 HAL 高级特性 `UART_ADVFEATURE_SWAP_INIT`。
+
+```c++
+status_t set_pin_swap(bool enable);
+```
+
+典型用途：硬件设计上 TX / RX 走线交叉、或需要通过软件兼容两套不同接线方案时，无需改板即可纠正。
+
+```c++
+uart1.set_pin_swap(true);   // 交换 TX / RX
+uart1.enable_rx_dma();      // 配置变更后需重新启动接收
+```
+
+#### 2.3 电平反转 `set_level_invert()`
+
+运行时反转 TX / RX 的有效电平，对应 HAL 高级特性 `UART_ADVFEATURE_TXINVERT_INIT` 与 `UART_ADVFEATURE_RXINVERT_INIT`。
+
+```c++
+status_t set_level_invert(bool tx_invert, bool rx_invert);
+```
+
+典型用途：外接反相器、或对接某些需要反相电平的协议（如部分 RS-485 收发器、红外接收头、特殊传感器）。
+
+```c++
+// TX 反相，RX 保持正常
+uart1.set_level_invert(true, false);
+uart1.enable_rx_dma();
+```
+
 ## Q&A
+
