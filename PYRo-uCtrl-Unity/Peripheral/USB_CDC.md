@@ -212,8 +212,6 @@ usb_task: tud_task_ext()
 | CRC16 错           | `pos++`                          | 整帧不可信，只前进 1 字节      |
 | 全部通过           | `dispatch()`，`pos += frame_len` | 消费整帧                       |
 
-**为什么失败时只前进 1 字节而不是跳过整帧？** 因为长度字段本身可能就是被破坏的那个字节。如果按坏长度跳，很可能直接越过后面真正的帧头，导致连续丢帧。只前进 1 字节保证不会漏掉任何可能的同步点——代价是误同步时会多扫几轮，但这是纯内存操作，代价可以忽略。
-
 处理完后把未消费的尾巴 `memmove` 回缓冲区头部：
 
 ```c++
@@ -300,7 +298,7 @@ pyro::usb_cdc_drv_t::instance().init("PYRO-INF2-GIM");
 
 序列号有严格校验：**非空、≤ 31 字符、全部可打印 ASCII**，任何一条不满足都返回 `PYRO_PARAM_ERROR`，**不做静默截断**。
 
-> **Warning**：序列号是设备身份，不是装饰。同一台 PC 上插两块板，如果序列号相同，Windows 会把它们认成同一个设备、抢同一个 COM 号——这是最难排查的失效形态。建议按 `产品-机型-编号` 的格式给出唯一值。
+> **Warning**：序列号是设备身份，不是装饰。同一台 PC 上插两块板，如果序列号相同，Windows 会把它们认成同一个设备、使用同一个 COM 号。
 
 ### 2. 注册接收回调 (推荐模式)
 
@@ -323,7 +321,7 @@ void AutoaimDriver::init() {
 
 > **Tip**：`register_rx()` 必须在 `init()` **之后**调用——`init()` 内部会对每路串口调 `reset()`，而 `reset()` 会清空 handler 表。
 > **Tip**：但**不需要**等 USB 挂载完成。挂载前注册才是正确做法，否则上电瞬间的帧会丢。
-> **Warning**：回调运行在 `usb_task` 上下文（**不是 ISR**），因此可以用任务版 FreeRTOS API，但**绝不能阻塞**。要跨任务传数据请用 `xMessageBufferSend(..., 0)`，超时给 0——缓冲满了宁可丢这一帧，也绝不能拖住 TinyUSB 栈。
+> **Warning**：回调运行在 `usb_task` 上下文（**不是 ISR**），因此可以用任务版 FreeRTOS API，但**绝不能阻塞**。要跨任务传数据请用 `xMessageBufferSend(..., 0)`，超时给0。
 
 ### 3. 数据发送
 
@@ -343,7 +341,7 @@ usb.send(SERIAL_ID, TX_FRAME_ID, reinterpret_cast<const uint8_t *>(&cmd), sizeof
 | `PYRO_BUSY`        | `_tx_buf` 空间不足，或 5 ms 内没拿到 `_tx_mutex` |
 | `PYRO_PARAM_ERROR` | `len > 256`，或 `data == nullptr`                |
 
-> **注意**：`PYRO_OK` 只代表**入队成功**，不代表主机已收到。USB 全速 bulk 端点没有应用层确认机制，需要可靠性就自己在业务层加序号 + 应答。
+> **注意**：`PYRO_OK` 只代表**入队成功**，不代表主机已收到。USB 全速 bulk 端点没有应用层确认机制，需要可靠性需在业务层加序号 + 应答。
 
 ### 4. 资源释放
 
@@ -356,37 +354,3 @@ AutoaimDriver::~AutoaimDriver() {
 ```
 
 ## Q&A
-
-**Q1：为什么不用 `tud_cdc_read()` / `tud_cdc_write()` 这类全局 API？**
-
-那是 TinyUSB 给单串口场景准备的便捷封装，内部固定操作 `itf = 0`。本项目要支持多路串口，所有接口都必须显式带 `serial_id`，所以统一用 `tud_cdc_n_read(itf, ...)` / `tud_cdc_n_write(itf, ...)` 这一套带 `n` 的版本。驱动内部没有任何一处硬编码接口号。
-
-**Q2：改了 `CFG_TUD_CDC` 却还是只有一个 COM 口？**
-
-三处必须同时改，缺一不可：
-
-1. `tusb_config.h` → `#define CFG_TUD_CDC 2`
-2. `pyro_usb_descriptors.c` → `ITF_NUM_TOTAL = 4`、`CONFIG_TOTAL_LEN = 141`、两组 `TUD_CDC_DESCRIPTOR`、端点号不重复
-3. `pyro_usb_cdc_drv.h` → `_serial[]` 数组长度
-
-最容易踩的坑是**只改了第 1 处**。此时 TinyUSB 的 `tud_cdc_n_*(1, ...)` 会在 `TU_VERIFY(itf < CFG_TUD_CDC)` 处**静默返回 0/false**，不报错、不崩溃、不进 HardFault，只表现为"1 号口既收不到也发不出"。排查多串口问题时，第一眼就该看这一行。
-
-**Q3：`send()` 返回 `PYRO_OK`，但上位机没收到？**
-
-按这个顺序查：
-
-1. `tud_mounted()` 是否为真——线插了但枚举失败的话 `send()` 会返回 `PYRO_ERROR`，能返回 `OK` 说明已挂载。
-2. 上位机是否**打开了端口**。`CFG_TUD_CDC_TX_OVERWRITABLE_IF_NOT_CONNECTED = 1` 时，DTR=0（端口未打开）下 TX FIFO 可被覆盖，`tud_cdc_write()` 不会失败，即"设备以为在发、其实无人接收"。
-3. 帧的 CRC 是否算对。CRC8 覆盖**前 5 字节**（含 CRC8 字节本身置 0 后再算），CRC16 覆盖**除末尾 2 字节外的全部**。这两条最容易写错。
-
-**Q4：为什么最多只能 4 路？**
-
-STM32H723 的 dwc2 控制器 `EP_MAX_HS = 9`，其中 EP0 被控制传输占用，剩 8 个可用端点号。每个 CDC 功能需要 1 个 notify IN 端点 + 1 个数据端点（IN/OUT 共用编号），所以 `8 / 2 = 4`。想要更多路只能换用 Vendor 类自定义协议，或者把多路业务复用在同一路 CDC 上靠 `frame_id` 区分。
-
-**Q5：`frame_id` 只有 256 个，用完了怎么办？**
-
-`frame_id` 是 `uint8_t`，但路由键是 `(serial_id, frame_id)`，两路串口合计 512 个独立 ID。实际项目里业务帧通常只有个位数，远用不满。真要扩展，把 `frame_id` 改成 `uint16_t` 即可——帧头会从 5 B 变成 6 B，`HEADER_SIZE`、`CONFIG` 里的 `LEN` 偏移、`frame_len = len + 7` 这几处要同步改。
-
-**Q6：`enable_rx()` / `disable_rx()` 现在真的有用吗？**
-
-**当前版本这两个函数只写标志位，接收路径并没有读取它**——也就是说，即使不调用 `enable_rx()`，数据照样会进来。保留这两个接口是为了将来支持"按需开关接收"，但请**不要依赖它们来屏蔽数据**。要屏蔽某个 `frame_id`，正确做法是不注册对应 handler（未注册的帧会被 `dispatch()` 静默丢弃）。
