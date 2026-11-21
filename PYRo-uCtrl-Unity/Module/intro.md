@@ -4,7 +4,240 @@
 
 ------
 
-## 第一部分：快速使用
+## 第一部分：代码详解
+
+> 目标：深入理解 `module_base_t` 的架构设计、CRTP单例、HFSM 状态机机制及内部运行原理。
+
+
+### 1. CRTP 单例模式
+ 
+CRTP：奇异递归模板模式，基类拿派生类作为模板参数 `template<class Derived> class Base`。
+CRTP 单例好处：
+1.	基类复用单例逻辑，派生类只需要继承，不用重复写单例代码
+2.	实例是派生类类型，不需要强制类型转换
+3.	静态实例放在基类，每个派生类会实例化一套独立静态变量（模板实例化）
+
+**标准 CRTP 单例模板**
+
+```cpp
+//模板
+template<typename Derived>
+class SingletonCRTP
+{
+public:
+    // 获取单例实例
+    [[nodiscard]] static Derived& instance()
+    {
+        // 局部static：第一次调用才构造，线程安全
+        static Derived inst;
+        return inst;
+    }
+     //删除拷贝，移动，禁止复制单例
+    SingletonCRTP(const SingletonCRTP&) = delete;
+    SingletonCRTP& operator=(const SingletonCRTP&) = delete;
+    SingletonCRTP(SingletonCRTP&&) = delete;
+    SingletonCRTP& operator=(SingletonCRTP&&) = delete;
+
+protected:
+    // 构造析构放protected，只允许派生类访问
+    SingletonCRTP() = default;
+    ~SingletonCRTP() = default;
+};
+
+```
+**派生类怎么用？**
+
+派生类私有继承，并且把自己传给模板参数 : `public SingletonCRTP<MyClass>`
+
+⚠️ 派生类构造函数必须是 private，防止外部直接构造对象破坏单例； 同时要把基类声明为友元，让基类里的 `static Derived inst`; 能够调用私有构造函数。
+
+```cpp
+// 业务单例类
+class MyDriver : public SingletonCRTP<MyDriver>
+{
+    // 必须友元，让基类SingletonCRTP可以调用私有构造
+    friend SingletonCRTP<MyDriver>;
+private:
+    MyDriver() = default; // 私有构造，外部不能 new MyDriver
+
+public:
+    void do_work()
+    {
+        //业务逻辑
+    }
+};
+```
+
+```cpp
+//使用方法
+MyDriver::instance().do_work();
+
+auto& drv = MyDriver::instance();
+```
+**关键点**
+1. 为什么要 `friend SingletonCRTP<MyDriver>`
+ 在基类里面，要构造 MyDriver，但 MyDriver() 是 private。 不加友元 → 编译报错，基类无权访问派生类私有构造函数。
+2. 每个派生类拥有独立实例
+模板会针对不同 Derived 生成不同版本的基类。 `SingletonCRTP<A>` 和 `SingletonCRTP<B>` 是两个完全不同类，各自拥有自己的 `static Derived inst`，互不干扰。
+3. 生命周期
+static Derived inst 是函数内局部静态变量：
+•	第一次调用 instance() 才构造（懒加载）
+•	程序退出时析构
+•	C++11 起初始化线程安全。
+对比：如果把 static 变量放到类作用域 static Derived inst;，那是早初始化，main 之前就构造。
+4. 能不能把派生类构造放 protected？
+可以，但不推荐。protected 意味着派生类还能被别人继承，子类可以构造实例，破坏单例约束。private + friend 更严谨。
+5. 禁止复制移动
+基类把拷贝移动全部 delete，派生类会继承这个限制，不能拷贝单例对象。
+
+------
+### 2. HFSM 状态机模式
+
+每个模块使用二级层级状态机。`fsm_t` 继承自 `state_t`，这意味着一个状态机本身也是一个状态，可以嵌套到父状态机中。
+
+```
+_main_fsm (fsm_t<owner>)
+├── _fsm_passive / _state_passive
+│   ├── calibration_state  (校准)
+│   └── idle_state         (待机)
+└── _fsm_active / _state_active
+    ├── normal_state       (常规控制)
+    ├── autoaim_state      (自瞄)
+    └── sling_state        (吊射)
+```
+
+#### 简单状态（单层，无子状态）
+
+继承 `state_t<owner>`，实现三个生命周期钩子：
+
+```cpp
+struct state_passive_t final : public state_t<owner>
+{
+    void enter(owner *owner) override;
+    void execute(owner *owner) override;
+    void exit(owner *owner) override;
+};
+```
+
+#### 复合状态（嵌套子状态机）
+
+继承 `fsm_t<owner>`，既可拥有子状态，也可覆盖自身的生命周期钩子：
+
+```cpp
+struct fsm_active_t final : public fsm_t<owner>
+{
+    struct cruising_state_t final : public state_t<owner> { /* ... */ };
+    struct climbing_fsm_t final : public fsm_t<owner>      { /* ... */ };
+
+    void on_enter(owner *owner) override;
+    void on_execute(owner *owner) override;
+    void on_exit(owner *owner) override;
+
+  private:
+    cruising_state_t cruising_state;
+    climbing_fsm_t climbing_fsm;
+};
+```
+
+#### 关键区别
+
+| 基类             | 生命周期钩子                                                 | 子状态 | 用途     |
+| ---------------- | ------------------------------------------------------------ | ------ | -------- |
+| `state_t<owner>` | `enter()` / `execute()` / `exit()`                           | 无     | 叶子状态 |
+| `fsm_t<owner>`   | `on_enter()` / `on_execute()` / `on_exit()` + `change_state()` | 有     | 组合状态 |
+
+#### PASSIVE / ACTIVE 切换模式
+
+```cpp
+void motor_ctrl_t::_fsm_execute()
+{
+    _ctx.cmd = &_current_cmd;
+
+    if (_ctx.cmd->mode == cmd_base_t::mode_t::ACTIVE)
+        _main_fsm.change_state(&_state_active);
+    else
+        _main_fsm.change_state(&_state_passive);
+
+    _main_fsm.execute(this);
+}
+```
+> 更多状态机细节请参考状态机章节
+
+------
+### 3. 架构概览
+
+```
+┌─────────────── Application Layer ────────────────┐
+│  init            ┌  - command thread             │
+│  - new cmd       │   ┌─────────────────────┐     │
+│  - new deps      │   │ - 外部msg → cmd 转换 │     │
+│  - configure()   │   │ - set_command() 下发│     │
+│  - xtaskcreate()─┘   └─────────────────────┘     │
+│  - start()┐                                      │
+└────────────────────┬─────────────────────────────┘
+            │        │
+┌───────────┬────────▼── Module Layer ─────────────┐
+│  module_base_t<Derived, ModuleParams>            │
+│  _run_loop_impl()                                │
+│  ┌─────────────────────────────────────────────┐ │
+│  │ 环形缓冲区 (CMD_BUF_SIZE=16)                 │ │
+│  │ _update_command() → _current_cmd            │ │
+│  │ _update_feedback() → 传感器/电机数据刷新     │ │
+│  │ _fsm_execute()    → 状态机调度               │ │
+│  └─────────────────────────────────────────────┘ │
+│  每 1ms 循环执行一次 (FreeRTOS 任务)              │
+└──────────────────────────────────────────────────┘
+```
+
+| 阶段   | 调用的方法                                          | 说明                                   |
+| ------ | --------------------------------------------------- | -------------------------------------- |
+| 创建   | `instance()`                                        | CRTP 单例，首次调用时构造              |
+| 配置   | `configure(deps)`                                   | 注入依赖，必须在 `start()` 前调用      |
+| 启动   | `start()`                                           | 创建 FreeRTOS 任务，自动调用 `_init()` |
+| 运行时 | `set_command(cmd)`                                  | 线程安全写入，环形缓冲区 FIFO          |
+| 循环   | `_run_loop_impl`                                    | 1ms 周期                               |
+
+
+核心循环（`_run_loop_impl`）以 1ms 为周期，顺序执行：
+1. `_update_command()` — 从环形缓冲区取出最新命令（Zero-Order Hold）
+2. `_update_feedback()` — 刷新传感器、电机反馈数据
+3. `_fsm_execute()` — 根据命令模式调度状态机
+
+#### 数据传输链路
+```
+遥控器等外部消息
+    ↓             read msg              ┐
+  cmd_ptr                               |app 层
+    ↓             set_command           ┘
+  环形缓冲区 
+    ↓              get_command          ┐
+ _current_cmd                           |module 层    
+    ↓             fsm_execute赋值       ┘
+ _ctx.cmd
+                 
+```
+
+
+------
+### 4. 模块生命周期详解
+
+```
+start()
+  └─ _task.start()
+       └─ init_entry_point(this)          ← 同步执行！
+            ├─ self->init()  → _owner->_init()   ← 你的初始化回调
+            │    └─ 返回非 PYRO_OK → start() 直接返回错误，循环任务不创建
+            └─ xTaskCreate(loop_entry_point, ...)  ← 创建 FreeRTOS 循环任务
+                 └─ run_loop() → _owner->_run_loop_impl()  ← 1ms 死循环
+```
+
+注意：**init 是同步的**——循环任务成功创建后`start()` 才会返回，如果返回 `PYRO_OK`，说明 `_init()` 已执行完毕且循环任务已创建；如果返回非 OK，循环任务根本没起来。
+
+
+
+---
+
+## 第二部分：快速使用
 
 > 目标：15 分钟内完成一个新模块的开发框架。
 
@@ -139,6 +372,8 @@ struct screw_gimbal_module_params_t
 ```
 
 > **三个别名缺一不可。** 基类通过它们推导所有内部类型。
+
+
 
 #### 步骤 6：实现模块类
 
@@ -315,24 +550,36 @@ void hero_gimbal_thread(void *argument)
 > **要点：** 命令线程通过 `set_command()` 写入环形缓冲区，模块循环通过 `_update_command()` 消费（线程安全）。
 
 ------
+### 5. 任务规划器
 
-### 5. 生命周期速查
+在`start_mission_planer_task`中创建线程
+/
+```cpp
+void start_mission_planer_task(void const *argument)
+{
+    xTaskCreate(pyro_init_thread, "pyro_init_thread", 512, nullptr,
+                configMAX_PRIORITIES - 1, nullptr);
 
+#if BOARD == GIMBAL_BOARD
+    xTaskCreate(hero_gimbal_init, "pyro_gimbal_init", 512, nullptr,
+                configMAX_PRIORITIES - 2, nullptr);
+    vTaskDelay(10);
+    xTaskCreate(hero_booster_init, "pyro_booster_init", 512, nullptr,
+                configMAX_PRIORITIES - 2, nullptr);
+#elif BOARD == CHASSIS_BOARD
+    xTaskCreate(hero_chassis_init, "pyro_chassis_init", 512, nullptr,
+                configMAX_PRIORITIES - 2, nullptr);
+#endif
+
+    xTaskCreate(hero_board_com_init, "pyro_board_com_init", 512, nullptr,
+                configMAX_PRIORITIES - 2, nullptr);
+
+    vTaskDelete(nullptr);
+}
 ```
-new CmdType()  ──→ configure(deps)  ──→ start()  ──→ 循环运行 ──→ 析构
-       │                                              │
-       └── set_command() ←── 遥控器/上位机 ──────────┘
-```
-
-| 阶段   | 调用的方法                                          | 说明                                   |
-| ------ | --------------------------------------------------- | -------------------------------------- |
-| 创建   | `instance()`                                        | CRTP 单例，首次调用时构造              |
-| 配置   | `configure(deps)`                                   | 注入依赖，必须在 `start()` 前调用      |
-| 启动   | `start()`                                           | 创建 FreeRTOS 任务，自动调用 `_init()` |
-| 运行时 | `set_command(cmd)`                                  | 线程安全写入，环形缓冲区 FIFO          |
-| 循环   | `_init()` → `_update_feedback()` → `_fsm_execute()` | 1ms 周期                               |
 
 ------
+
 
 ### 6. 完整模块模板
 
@@ -454,161 +701,10 @@ class my_module_t final
 
 ------
 
-## 第二部分：代码详解
-
-> 目标：深入理解 `module_base_t` 的架构设计、HFSM 状态机机制及内部运行原理。
-
-### 1. 架构概览
-
-```
-┌─────────────── Application Layer ───────────────┐
-│  init thread          command thread             │
-│  - new cmd            - rc → cmd 转换             │
-│  - new deps           - set_command() 下发        │
-│  - configure()                                  │
-│  - start()                                       │
-└────────────────────┬─────────────────────────────┘
-                     │
-┌────────────────────▼── Module Layer ──────────────┐
-│  module_base_t<Derived, ModuleParams>             │
-│  ┌─────────────────────────────────────────────┐ │
-│  │ 环形缓冲区 (CMD_BUF_SIZE=16)                 │ │
-│  │ _update_command() → _current_cmd            │ │
-│  │ _update_feedback() → 传感器/电机数据刷新      │ │
-│  │ _fsm_execute()    → 状态机调度               │ │
-│  └─────────────────────────────────────────────┘ │
-│  每 1ms 循环执行一次 (FreeRTOS 任务)              │
-└──────────────────────────────────────────────────┘
-```
-
-核心循环（`_run_loop_impl`）以 1ms 为周期，顺序执行：
-
-1. `_update_command()` — 从环形缓冲区取出最新命令（Zero-Order Hold）
-2. `_update_feedback()` — 刷新传感器、电机反馈数据
-3. `_fsm_execute()` — 根据命令模式调度状态机
 
 ------
 
-### 2. HFSM 状态机模式
-
-每个模块使用二级层级状态机。`fsm_t` 继承自 `state_t`，这意味着一个状态机本身也是一个状态，可以嵌套到父状态机中。
-
-```
-_main_fsm (fsm_t<owner>)
-├── _fsm_passive / _state_passive
-│   ├── calibration_state  (校准)
-│   └── idle_state         (待机)
-└── _fsm_active / _state_active
-    ├── normal_state       (常规控制)
-    ├── autoaim_state      (自瞄)
-    └── sling_state        (吊射)
-```
-
-#### 简单状态（单层，无子状态）
-
-继承 `state_t<owner>`，实现三个生命周期钩子：
-
-```cpp
-struct state_passive_t final : public state_t<owner>
-{
-    void enter(owner *owner) override;
-    void execute(owner *owner) override;
-    void exit(owner *owner) override;
-};
-```
-
-#### 复合状态（嵌套子状态机）
-
-继承 `fsm_t<owner>`，既可拥有子状态，也可覆盖自身的生命周期钩子：
-
-```cpp
-struct fsm_active_t final : public fsm_t<owner>
-{
-    struct cruising_state_t final : public state_t<owner> { /* ... */ };
-    struct climbing_fsm_t final : public fsm_t<owner>      { /* ... */ };
-
-    void on_enter(owner *owner) override;
-    void on_execute(owner *owner) override;
-    void on_exit(owner *owner) override;
-
-  private:
-    cruising_state_t cruising_state;
-    climbing_fsm_t climbing_fsm;
-};
-```
-
-#### 关键区别
-
-| 基类             | 生命周期钩子                                                 | 子状态 | 用途     |
-| ---------------- | ------------------------------------------------------------ | ------ | -------- |
-| `state_t<owner>` | `enter()` / `execute()` / `exit()`                           | 无     | 叶子状态 |
-| `fsm_t<owner>`   | `on_enter()` / `on_execute()` / `on_exit()` + `change_state()` | 有     | 组合状态 |
-
-#### PASSIVE / ACTIVE 切换模式
-
-```cpp
-void motor_ctrl_t::_fsm_execute()
-{
-    _ctx.cmd = &_current_cmd;
-
-    if (_ctx.cmd->mode == cmd_base_t::mode_t::ACTIVE)
-        _main_fsm.change_state(&_state_active);
-    else
-        _main_fsm.change_state(&_state_passive);
-
-    _main_fsm.execute(this);
-}
-```
-
-------
-
-### 3. 模块生命周期详解
-
-```
-new CmdType()          ──→ configure(deps)  ──→ start()  ──→ 循环运行 ──→ 析构
-       │                                              │
-       └── set_command() ←── 遥控器/上位机 ──────────┘
-```
-
-| 阶段   | 调用的方法                                          | 说明                                   |
-| ------ | --------------------------------------------------- | -------------------------------------- |
-| 创建   | `instance()`                                        | CRTP 单例，首次调用时构造              |
-| 配置   | `configure(deps)`                                   | 注入依赖，必须在 `start()` 前调用      |
-| 启动   | `start()`                                           | 创建 FreeRTOS 任务，自动调用 `_init()` |
-| 运行时 | `set_command(cmd)`                                  | 线程安全写入，环形缓冲区 FIFO          |
-| 循环   | `_init()` → `_update_feedback()` → `_fsm_execute()` | 1ms 周期                               |
-
-------
-
-### 4. 任务规划器
-
-```cpp
-void start_mission_planer_task(void const *argument)
-{
-    xTaskCreate(pyro_init_thread, "pyro_init_thread", 512, nullptr,
-                configMAX_PRIORITIES - 1, nullptr);
-
-#if BOARD == GIMBAL_BOARD
-    xTaskCreate(hero_gimbal_init, "pyro_gimbal_init", 512, nullptr,
-                configMAX_PRIORITIES - 2, nullptr);
-    vTaskDelay(10);
-    xTaskCreate(hero_booster_init, "pyro_booster_init", 512, nullptr,
-                configMAX_PRIORITIES - 2, nullptr);
-#elif BOARD == CHASSIS_BOARD
-    xTaskCreate(hero_chassis_init, "pyro_chassis_init", 512, nullptr,
-                configMAX_PRIORITIES - 2, nullptr);
-#endif
-
-    xTaskCreate(hero_board_com_init, "pyro_board_com_init", 512, nullptr,
-                configMAX_PRIORITIES - 2, nullptr);
-
-    vTaskDelete(nullptr);
-}
-```
-
-------
-
-### 5. 设计决策 FAQ
+## 设计决策 FAQ
 
 #### `_ctx` 在哪里定义？
 
@@ -636,3 +732,20 @@ my_module_t::my_module_t() : module_base_t("my_module")
 #### 电机和 PID 为什么放在 `_ctx` 中而不是直接用 `_module_deps`？
 
 `_module_deps` 保存的是原始注入值。`_ctx` 中的 `motor`/`pid` 在 `_init()` 中被赋值后，所有状态机状态通过 `owner->_ctx.xxx` 访问，路径统一。这是约定而非强制。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

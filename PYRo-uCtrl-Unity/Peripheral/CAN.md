@@ -1,4 +1,4 @@
-Version<Badge type ="tip" text="1.0.0"/>  
+Version<Badge type ="tip" text="1.1.0"/>  
 File<Badge type = "info" text="pyro_bsp_can.h"/><Badge type = "info" text="pyro_bsp_can.cpp"/><Badge type = "info" text="pyro_can_drv.h"/><Badge type = "info" text="pyro_can_drv.cpp"/>
 
 # PYRo CAN Driver
@@ -54,7 +54,7 @@ if (buf.is_fresh() && buf.get_data(data)) {   // 有新鲜数据且拷贝成功
 ```
 
 **关键约定**：
-- 接收回调只接受**经典标准数据帧**（`FDCAN_FRAME_CLASSIC` + `FDCAN_STANDARD_ID`），其余帧（扩展帧、FD 帧、远程帧）在硬件过滤或软件判断中被丢弃；
+- 接收回调接受**经典标准数据帧和扩展数据帧**（`FDCAN_FRAME_CLASSIC` + `FDCAN_STANDARD_ID/EXTENDED_ID`），其余帧（FD 帧、远程帧）在硬件过滤或软件判断中被丢弃；
 - 硬件中断里只做“拷贝 + 置标志”，真正的协议解析/控制放在任务上下文，避免中断中做重活；
 - 多缓冲可共享同一驱动：每路业务（电机、板间指令、功率计）各自持有 `can_msg_buffer_t` 并 `register_rx_msg`，互不阻塞。
 
@@ -94,10 +94,12 @@ if (buf.is_fresh() && buf.get_data(data)) {   // 有新鲜数据且拷贝成功
 
 ##### 使用说明
 
-一个 `can_msg_buffer_t` 代表**一条固定 CAN ID 的接收缓冲**，通过构造传入监听的标准 ID：
+一个 `can_msg_buffer_t` 代表**一条固定 CAN ID 的接收缓冲**，通过构造传入监听的 ID 和帧类型（标准帧或扩展帧）：
 
 ```cpp
-explicit can_msg_buffer_t(uint32_t id);
+explicit can_msg_buffer_t(uint32_t id, id_type_t type = STANDARD_ID);
+// 或使用掩码过滤
+can_msg_buffer_t(uint32_t id, uint32_t mask, id_type_t type = STANDARD_ID);
 ```
 
 内部状态：
@@ -241,7 +243,12 @@ void send_motor_command()
 #include "pyro_can_drv.h"
 
 // 创建全局或模块级的消息缓冲区
-static pyro::can_msg_buffer_t motor_fb_buffer(0x201); // 订阅 ID 0x201
+// 标准帧（11-bit ID）
+static pyro::can_msg_buffer_t motor_fb_buffer(0x201);
+
+// 扩展帧（29-bit ID）
+static pyro::can_msg_buffer_t cybergear_fb_buffer(0x2807F00, 
+    pyro::can_msg_buffer_t::EXTENDED_ID);
 
 void init_motor_feedback()
 {
@@ -249,6 +256,7 @@ void init_motor_feedback()
 
     // 注册缓冲区（重复注册同一 ID 会返回 PYRO_ERROR）
     can.register_rx_msg(&motor_fb_buffer);
+    can.register_rx_msg(&cybergear_fb_buffer);
 }
 
 void poll_motor_feedback()
@@ -299,7 +307,7 @@ void config_can_device(pyro::bsp_can::which_can bus)
 
 | 方法                   | 签名                            | 说明                       |
 | ---------------------- | ------------------------------- | -------------------------- |
-| 构造                   | `can_msg_buffer_t(uint32_t id)` | 创建监听 `id` 的接收缓冲   |
+| 构造                   | `can_msg_buffer_t(uint32_t id, id_type_t type=STANDARD_ID)` | 创建监听 `id` 的接收缓冲（可指定标准帧或扩展帧）   |
 | `get_id`               | `uint32_t`                      | 返回监听 ID                |
 | `is_fresh`             | `bool`                          | 是否有未消费新数据         |
 | `mark_read`            | `void`                          | 清除 fresh 标志            |
@@ -354,7 +362,7 @@ void config_can_device(pyro::bsp_can::which_can bus)
 
 4. **总线离线恢复**: 当 CAN 总线发生 Bus-Off 时，驱动会自动尝试恢复。恢复期间 `send_msg()` 返回 `PYRO_BUSY`，调用方应实现重试逻辑而非直接报错。
 
-5. **仅支持标准帧**: 当前驱动仅处理 11-bit 标准 ID 的 Classic CAN 数据帧。扩展帧 (29-bit) 和 CAN FD 帧会被全局滤波器拒绝。
+5. **支持标准帧和扩展帧**: 驱动同时支持 11-bit 标准 ID 和 29-bit 扩展 ID 的 Classic CAN 数据帧。在创建消息缓冲区时，通过 `id_type_t` 参数指定帧类型（`STANDARD_ID` 或 `EXTENDED_ID`，默认为标准帧）。CAN FD 帧会被全局滤波器拒绝。
 
 
 ## Q&A

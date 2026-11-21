@@ -1,11 +1,11 @@
-Version<Badge type ="tip" text="1.0.0"/>  
-File<Badge type = "info" text="pyro_dji_motor_drv.h"/><Badge type = "info" text="pyro_dji_motor_drv.cpp"/><Badge type = "info" text="pyro_dm_motor_drv.h"/><Badge type = "info" text="pyro_dm_motor_drv.cpp"/><Badge type = "info" text="pyro_motor_base.h"/><Badge type = "info" text="pyro_motor_base.cpp"/>
+Version<Badge type ="tip" text="1.1.0"/>  
+File<Badge type = "info" text="pyro_dji_motor_drv.h"/><Badge type = "info" text="pyro_dji_motor_drv.cpp"/><Badge type = "info" text="pyro_dm_motor_drv.h"/><Badge type = "info" text="pyro_dm_motor_drv.cpp"/><Badge type = "info" text="pyro_cybergear_motor_drv.h"/><Badge type = "info" text="pyro_cybergear_motor_drv.cpp"/><Badge type = "info" text="pyro_motor_base.h"/><Badge type = "info" text="pyro_motor_base.cpp"/>
 
 # PYRo Motor Driver
 
 **基于 CAN 总线的多协议电机驱动框架**
 
-该电机驱动框架通过抽象基类 `motor_base_t` 统一电机控制接口，派生类实现不同品牌/协议电机的驱动逻辑。当前支持 **DJI 系列**（M3508 减速电机、M2006 减速电机、GM6020 云台电机）的 V1.0 电调协议，以及 **达妙 (DM) 系列** 电机的 MIT 模式控制协议。框架提供 CAN 发送帧复用池、位置/转速/扭矩解析、错误码管理及运行时 PID 参数调节等功能。
+该电机驱动框架通过抽象基类 `motor_base_t` 统一电机控制接口，派生类实现不同品牌/协议电机的驱动逻辑。当前支持 **DJI 系列**（M3508 减速电机、M2006 减速电机、GM6020 云台电机）的 V1.0 电调协议、**达妙 (DM) 系列** 电机的 MIT 模式控制协议，以及 **小米 CyberGear** 系列电机的多模式控制协议。框架提供 CAN 发送帧复用池、位置/转速/扭矩解析、错误码管理及运行时 PID 参数调节等功能。
 
 > 嵌入式开发前置知识：了解 CAN 总线通信、DJI 智能电机电调协议、MIT 控制模式、PYRo CAN 驱动框架 (`can_drv_t` / `can_msg_buffer_t`)
 
@@ -16,27 +16,27 @@ File<Badge type = "info" text="pyro_dji_motor_drv.h"/><Badge type = "info" text=
 ### 1. 整体架构
 
 ```text
-┌──────────────────────────────────────────────────────────────┐
-│                   Application Layer                          │
-│          enable() / disable() / send_torque()                │
-│          get_current_position() / get_current_rotate()       │
-├──────────────────────────────────────────────────────────────┤
-│                      motor_base_t  (抽象基类)                 │
-│  • CAN 通道绑定 (_which_can, _can_drv)                        │
-│  • 通用状态: _enable, _online, _temperature                   │
-│  • 通用数据: _current_position, _current_rotate, _current_torque │
-│  • 纯虚函数: enable/disable/update_feedback/send_torque      │
-├──────────────────────┬───────────────────────────────────────┤
-│   dji_motor_drv_t    │         dm_motor_drv_t                │
-│   (DJI 电调协议)      │         (DM MIT 模式)                  │
-│                      │                                       │
-│  • TX 帧池复用        │  • MIT 控制帧直发                      │
-│  • 多电机聚合发送      │  • float↔uint 量化编解码              │
-│  • 减速比内置          │  • 运行时 KP/KD 调节                  │
-│  ├─ M3508 (20N·m)    │  • 错误码检测与清除                    │
-│  ├─ M2006 (10N·m)    │                                       │
-│  └─ GM6020 (3N·m)    │                                       │
-└──────────────────────┴───────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                         Application Layer                                │
+│            enable() / disable() / send_torque()                          │
+│            get_current_position() / get_current_rotate()                 │
+├──────────────────────────────────────────────────────────────────────────┤
+│                        motor_base_t  (抽象基类)                           │
+│    • CAN 通道绑定 (_which_can, _can_drv)                                  │
+│    • 通用状态: _enable, _online, _temperature                             │
+│    • 通用数据: _current_position, _current_rotate, _current_torque       │
+│    • 纯虚函数: enable/disable/update_feedback/send_torque                │
+├─────────────────┬───────────────────────┬──────────────────────────────┤
+│ dji_motor_drv_t │    dm_motor_drv_t     │   cybergear_motor_drv_t      │
+│ (DJI 电调协议)   │    (DM MIT 模式)       │   (小米 CyberGear)            │
+│                 │                       │                              │
+│ • TX 帧池复用    │ • MIT 控制帧直发       │ • 29位扩展帧ID编码            │
+│ • 多电机聚合发送  │ • float↔uint 量化编解码│ • 4种运行模式切换             │
+│ • 减速比内置     │ • 运行时 KP/KD 调节    │ • 运控模式MIT控制             │
+│ ├─ M3508 (20N·m)│ • 错误码检测与清除     │ • 参数读写接口                │
+│ ├─ M2006 (10N·m)│                       │ • 详细故障状态                │
+│ └─ GM6020 (3N·m)│                       │                              │
+└─────────────────┴───────────────────────┴──────────────────────────────┘
 ```
 
 #### 控制任务中的调用范式
@@ -250,9 +250,52 @@ status_t dji_motor_drv_t::update_feedback()
 | -------- | --------------------------------- | ---------------- | -------------------------- | ---------------- | ---------- |
 | M3508    | `0x200` (id1-4) / `0x1FF` (id5-8) | `0x200 + id + 1` | 20.0 N·m                   | ±16384           | 19.203 : 1 |
 | M2006    | 同上                              | 同上             | 10.0 N·m                   | ±10000           | 36 : 1     |
-| GM6020   | `0x1FE` (id1-4) / `0x2FE` (id5-7) | `0x204 + id + 1` | 3.0 N·m                    | ±16384           | — (直驱)   |
+| GM6020   | 见下方控制模式说明                | `0x204 + id + 1` | 3.0 N·m                    | 见下方控制模式说明 | — (直驱)   |
 
-注意：GM6020 最多支持 7 个 ID（id8 不可用），且使用独立的 CAN ID 空间 (`0x1FE`/`0x2FE`)。
+注意：GM6020 最多支持 7 个 ID（id8 不可用），且使用独立的 CAN ID 空间。
+
+**GM6020 控制模式**
+
+GM6020 云台电机支持两种控制模式，通过构造函数的第三个参数指定：
+
+```cpp
+enum control_mode_t
+{
+    CURRENT_MODE = 0,  // 电流模式
+    VOLTAGE_MODE = 1   // 电压模式（默认）
+};
+
+// 构造函数
+dji_gm_6020_motor_drv_t(register_id_t id, which_can which, control_mode_t mode);
+```
+
+两种模式的差异：
+
+| 模式         | TX ID (id1-4) | TX ID (id5-7) | 控制量范围  | 控制量含义       |
+| ------------ | ------------- | ------------- | ----------- | ---------------- |
+| 电流模式     | `0x1FE`       | `0x2FE`       | ±16384      | 对应 ±3A 电流    |
+| 电压模式     | `0x1FF`       | `0x2FF`       | ±25000      | 电压控制量       |
+
+**模式选择建议**：
+- **电流模式**：适用于需要精确力矩控制的场景（如云台稳定控制），控制量与输出力矩成正比，响应特性更线性。
+- **电压模式**：适用于位置控制场景，控制量范围更大（±25000），可提供更大的控制裕度。
+
+构造示例：
+```cpp
+// 电流模式（精确力矩控制）
+dji_gm_6020_motor_drv_t yaw_motor(
+    dji_motor_tx_frame_t::id_1, 
+    bsp_can::can2, 
+    dji_gm_6020_motor_drv_t::CURRENT_MODE
+);
+
+// 电压模式（位置控制，默认）
+dji_gm_6020_motor_drv_t pitch_motor(
+    dji_motor_tx_frame_t::id_2, 
+    bsp_can::can2, 
+    dji_gm_6020_motor_drv_t::VOLTAGE_MODE
+);
+```
 
 **减速比常量** — `dji_m3508_motor_drv_t` 提供了减速比定义：
 
@@ -395,6 +438,193 @@ void set_runtime_kp(float kp);                   // 运行 Kp, 合法 0..500
 void set_runtime_kd(float kd);                   // 运行 Kd, 合法 0..5
 ```
 
+### 5. 小米 CyberGear 电机驱动 (`cybergear_motor_drv_t`)
+
+CyberGear 电机采用 29 位扩展帧 CAN 协议，支持多种运行模式和参数读写，提供了比 DJI 和 DM 更灵活的控制方式。
+
+#### 5.1 构造与 ID 约定
+
+```cpp
+cybergear_motor_drv_t(uint8_t motor_id, uint8_t master_id, bsp_can::which_can which);
+// 例: new cybergear_motor_drv_t(127, 0, bsp_can::can1);
+```
+
+- `motor_id`：电机的 CAN ID（通常为 127，可通过 `set_can_id()` 修改）
+- `master_id`：主机 ID（通常为 0）
+- `which`：所在 CAN 总线
+
+#### 5.2 CAN 扩展帧 ID 结构
+
+CyberGear 使用 29 位扩展帧 ID，结构如下：
+
+```
+bit[28:24] - 通信类型 (comm_type, 5位)
+bit[23:8]  - 数据区2 (data2, 16位)
+bit[7:0]   - 目标地址/电机ID (motor_id, 8位)
+```
+
+`cybergear_can_id_t` 类封装了 ID 的编解码：
+
+```cpp
+cybergear_can_id_t tx_id(comm_type, data2, motor_id);
+uint32_t can_id = tx_id.encode();  // 编码为29位ID
+```
+
+常用通信类型：
+- `0` - 获取设备ID
+- `1` - 运控模式控制
+- `2` - 运控模式反馈
+- `3` - 使能命令
+- `4` - 停止/清错命令
+- `6` - 设置机械零位
+- `7` - 修改电机CAN ID
+- `17` - 读取参数
+- `18` - 写入参数
+- `21` - 故障反馈
+
+#### 5.3 四种运行模式
+
+CyberGear 支持四种运行模式，通过 `set_run_mode()` 切换：
+
+```cpp
+enum run_mode_t : uint8_t
+{
+    MODE_MOTION_CONTROL = 0,  // 运控模式（默认，类似MIT控制）
+    MODE_POSITION = 1,        // 位置模式（电机内部位置PID）
+    MODE_SPEED = 2,           // 速度模式（电机内部速度PID）
+    MODE_CURRENT = 3,         // 电流模式（力矩控制）
+};
+```
+
+**模式切换示例**：
+```cpp
+motor->set_run_mode(cybergear_motor_drv_t::MODE_CURRENT);  // 切换到电流模式
+```
+
+#### 5.4 运控模式（MIT 控制）
+
+运控模式类似 DM 电机的 MIT 控制，可在一帧内同时控制位置、速度、KP、KD 和力矩：
+
+```cpp
+// 发送运控帧: 目标位置、速度、KP、KD、前馈力矩
+status_t send_motion_control(float target_angle, float target_velocity,
+                             float kp, float kd, float torque);
+```
+
+数据映射范围：
+- 位置：[-4π, 4π] → [0, 65535]
+- 速度：[-30, 30] rad/s → [0, 65535]
+- KP：[0, 500] → [0, 65535]
+- KD：[0, 5] → [0, 65535]
+- 力矩：[-12, 12] N·m → [0, 65535]
+
+#### 5.5 参数读写接口
+
+CyberGear 提供了丰富的参数读写接口，支持运行时动态配置：
+
+```cpp
+// 写入参数（掉电丢失）
+status_t write_param(param_index_t index, float value);
+status_t write_param(param_index_t index, uint8_t value);
+status_t write_param(param_index_t index, int16_t value);
+
+// 读取参数（带超时，默认100ms）
+status_t read_param(param_index_t index, float &value);
+status_t read_param(param_index_t index, uint8_t &value);
+status_t read_param(param_index_t index, int16_t &value);
+```
+
+常用参数索引：
+
+| 参数                 | 索引       | 类型   | 说明                               |
+| -------------------- | ---------- | ------ | ---------------------------------- |
+| `PARAM_RUN_MODE`     | `0x7005`   | uint8  | 运行模式                           |
+| `PARAM_IQ_REF`       | `0x7006`   | float  | 电流模式Iq指令 (-23~23A)           |
+| `PARAM_SPD_REF`      | `0x700A`   | float  | 转速模式转速指令 (-30~30rad/s)     |
+| `PARAM_LIMIT_TORQUE` | `0x700B`   | float  | 转矩限制 (0~12Nm)                  |
+| `PARAM_LOC_REF`      | `0x7016`   | float  | 位置模式角度指令 (rad)             |
+| `PARAM_LIMIT_SPD`    | `0x7017`   | float  | 位置模式速度限制 (0~30rad/s)       |
+| `PARAM_LOC_KP`       | `0x701E`   | float  | 位置Kp (默认30)                    |
+| `PARAM_SPD_KP`       | `0x701F`   | float  | 速度Kp (默认1)                     |
+| `PARAM_SPD_KI`       | `0x7020`   | float  | 速度Ki (默认0.002)                 |
+| `PARAM_MECH_POS`     | `0x7019`   | float  | 负载端计圈机械角度 (rad)           |
+| `PARAM_VBUS`         | `0x701C`   | float  | 母线电压 (V)                       |
+
+**参数读写示例**：
+```cpp
+// 读取母线电压
+float vbus;
+if (motor->read_param(PARAM_VBUS, vbus) == PYRO_OK) {
+    // vbus 包含电压值
+}
+
+// 设置力矩限制
+motor->write_param(PARAM_LIMIT_TORQUE, 8.0f);  // 限制到8Nm
+```
+
+#### 5.6 故障状态管理
+
+CyberGear 提供两级故障状态：
+
+**简化故障状态**（从运控反馈帧bit[16:21]解析）：
+```cpp
+struct fault_status_t
+{
+    bool under_voltage;    // bit16: 欠压故障
+    bool over_current;     // bit17: 过流
+    bool over_temp;        // bit18: 过温
+    bool magnetic_error;   // bit19: 磁编码故障
+    bool hall_error;       // bit20: HALL编码故障
+    bool uncalibrated;     // bit21: 未标定
+};
+
+fault_status_t fault = motor->get_fault_status();
+```
+
+**详细故障状态**（从故障反馈帧解析）：
+```cpp
+struct detailed_fault_t
+{
+    bool motor_over_temp;           // 电机过温故障，默认80度
+    bool driver_chip_fault;         // 驱动芯片故障
+    bool under_voltage;             // 欠压故障
+    bool over_voltage;              // 过压故障
+    bool phase_b_over_current;      // B相电流采样过流
+    bool phase_c_over_current;      // C相电流采样过流
+    bool encoder_uncalibrated;      // 编码器未标定
+    bool overload;                  // 过载故障
+    bool phase_a_over_current;      // A相电流采样过流
+    bool motor_temp_warning;        // 电机过温预警，默认75度
+};
+
+detailed_fault_t detailed = motor->get_detailed_fault();
+```
+
+**清除故障**：
+```cpp
+motor->clear_fault();  // 清除故障标志
+```
+
+#### 5.7 其他功能
+
+**设置机械零位**（将当前位置设为零位，掉电丢失）：
+```cpp
+motor->set_mechanical_zero();
+```
+
+**修改电机 CAN ID**（立即生效，掉电丢失）：
+```cpp
+motor->set_can_id(100);  // 修改为ID 100
+```
+
+**获取设备唯一标识符**：
+```cpp
+uint64_t mcu_id;
+if (motor->get_device_id(mcu_id) == PYRO_OK) {
+    // mcu_id 包含64位唯一ID
+}
+```
+
 ## Part 2: 快速上手 (Quick Start)
 
 ### 1. DJI 电机初始化
@@ -502,7 +732,102 @@ void dm_motor_control_loop()
 }
 ```
 
-### 4. 在线检测与健康监控
+### 4. CyberGear 电机初始化与控制
+
+```c++
+#include "pyro_cybergear_motor_drv.h"
+
+// CyberGear 电机:
+// 参数1: 电机ID (通常为127)
+// 参数2: 主机ID (通常为0)
+// 参数3: CAN 总线通道
+static pyro::cybergear_motor_drv_t cybergear_motor(127, 0, pyro::bsp_can::can1);
+
+void cybergear_motor_init()
+{
+    // 设置反馈数据解析范围
+    cybergear_motor.set_position_range(-12.566f, 12.566f);  // ±4π
+    cybergear_motor.set_rotate_range(-30.0f, 30.0f);        // ±30 rad/s
+    cybergear_motor.set_torque_range(-12.0f, 12.0f);        // ±12 Nm
+
+    // 使能电机（自动切换到电流模式）
+    cybergear_motor.enable();
+}
+
+// 方式1: 电流模式 - 外部双环PID控制
+void cybergear_current_mode_control()
+{
+    static pyro::pid_t position_pid(10.0f, 0.0f, 0.5f, 5.0f, 30.0f);
+    static pyro::pid_t velocity_pid(0.5f, 0.01f, 0.0f, 3.0f, 12.0f);
+
+    while (true)
+    {
+        // 1. 更新反馈
+        if (cybergear_motor.update_feedback() == PYRO_OK)
+        {
+            float pos = cybergear_motor.get_current_position();
+            float vel = cybergear_motor.get_current_rotate();
+
+            // 2. 双环PID计算
+            float target_vel = position_pid.calculate(target_position, pos);
+            float torque = velocity_pid.calculate(target_vel, vel);
+
+            // 3. 发送力矩指令
+            cybergear_motor.send_torque(torque);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(10));  // 100Hz
+    }
+}
+
+// 方式2: 位置模式 - 使用电机内部PID
+void cybergear_position_mode_control()
+{
+    // 切换到位置模式
+    cybergear_motor.set_run_mode(pyro::cybergear_motor_drv_t::MODE_POSITION);
+
+    // 可选：调整电机内部PID参数
+    cybergear_motor.write_param(pyro::cybergear_motor_drv_t::PARAM_LOC_KP, 50.0f);
+    cybergear_motor.write_param(pyro::cybergear_motor_drv_t::PARAM_LIMIT_SPD, 20.0f);
+
+    while (true)
+    {
+        // 1. 更新反馈
+        cybergear_motor.update_feedback();
+
+        // 2. 发送目标位置（电机内部PID控制）
+        cybergear_motor.send_control(target_position);
+
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
+// 方式3: 运控模式 - MIT控制
+void cybergear_mit_control()
+{
+    // 切换到运控模式
+    cybergear_motor.set_run_mode(pyro::cybergear_motor_drv_t::MODE_MOTION_CONTROL);
+
+    while (true)
+    {
+        // 1. 更新反馈
+        cybergear_motor.update_feedback();
+
+        // 2. 发送MIT控制帧（位置、速度、KP、KD、前馈力矩）
+        cybergear_motor.send_motion_control(
+            target_position,  // 目标位置 (rad)
+            target_velocity,  // 目标速度 (rad/s)
+            50.0f,           // KP
+            1.0f,            // KD
+            feedforward_torque  // 前馈力矩 (Nm)
+        );
+
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+```
+
+### 5. 在线检测与健康监控
 
 ```c++
 void motor_health_check()
@@ -525,7 +850,7 @@ void motor_health_check()
 }
 ```
 
-### 5. 注意事项 (Caveats)
+### 6. 注意事项 (Caveats)
 
 1. **CAN 总线必须先初始化**: 创建电机实例前，对应的 CAN 总线必须已完成 `bsp_can::init_all()`。电机构造函数中调用 `bsp_can::get_can(which)` 获取 CAN 驱动指针，若总线未初始化将导致空指针。
 2. **DJI 帧聚合的槽位分配**: 同一 CAN 帧内（4 个槽位）的所有电机必须在同一个控制循环中全部调用 `send_torque()`，最后一个调用才会触发实际的 CAN 发送。若某个槽位已注册但未调用 `send_torque()`，该帧将永远不会发送，导致同帧所有电机失能。
@@ -553,5 +878,9 @@ DJI GM6020有**电压控制**和**电流控制**两种模式，目前模块里�
 :::
 
 然后断开连接。恭喜你，又解决了一个前辈留下的小巧思。😂
+
+::: info
+现在已经更改了驱动，可以在初始化的时候自行选择模式，两种模式都可以用了
+:::
 
 ## Q&A
