@@ -85,7 +85,8 @@ export default defineConfig({
               { text: 'UART', link: '/PYRo-uCtrl-Unity/Peripheral/UART' },
               { text: 'CAN', link: '/PYRo-uCtrl-Unity/Peripheral/CAN' },
               { text: 'DWT', link: '/PYRo-uCtrl-Unity/Peripheral/DWT' },
-            ] },
+            
+              { text: 'USBCDC驱动', link: '/PYRo-uCtrl-Unity/Peripheral/USB_CDC' },] },
           ]
         }
       ],
